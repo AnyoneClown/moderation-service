@@ -30,9 +30,11 @@ FROM python:3.11-slim AS runtime
 WORKDIR /app
 
 # Only the minimal runtime libraries (libpq for asyncpg, image libs for Pillow)
+# fonts-dejavu-core provides DejaVuSans.ttf — excellent Cyrillic (Ukrainian) support
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 \
-    libjpeg62-turbo libpng16-16 libfreetype6 && \
+    libjpeg62-turbo libpng16-16 libfreetype6 \
+    fonts-dejavu-core && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual environment from the builder stage

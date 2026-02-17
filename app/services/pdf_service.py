@@ -4,14 +4,18 @@ app/services/pdf_service.py — PDF report generation for moderation results.
 Uses ReportLab to produce a clean, single-page (or multi-page) PDF
 containing the full moderation breakdown for a given record.
 Supports English and Ukrainian via the ``lang`` parameter.
+Uses DejaVu Sans TTF font for full Cyrillic/Ukrainian support.
 """
 
 import io
+import os
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
@@ -22,6 +26,26 @@ from reportlab.platypus import (
 )
 
 from app.i18n import get_translations
+
+# ── Register DejaVu Sans (Cyrillic-capable) TTF fonts ──
+_FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+_FONT_REGISTERED = False
+
+def _register_fonts():
+    """Register DejaVu Sans TTF fonts for Cyrillic support (once)."""
+    global _FONT_REGISTERED
+    if _FONT_REGISTERED:
+        return
+    regular = os.path.join(_FONT_DIR, "DejaVuSans.ttf")
+    bold = os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")
+    if os.path.exists(regular):
+        pdfmetrics.registerFont(TTFont("DejaVu", regular))
+    if os.path.exists(bold):
+        pdfmetrics.registerFont(TTFont("DejaVu-Bold", bold))
+    _FONT_REGISTERED = True
+
+_CYR_FONT = "DejaVu"
+_CYR_FONT_BOLD = "DejaVu-Bold"
 
 
 # ── Colour palette ──
@@ -58,6 +82,7 @@ def generate_pdf(record, lang: str = "en") -> bytes:
     Returns the raw PDF bytes (ready to be sent as an HTTP response).
     """
     t = get_translations(lang)
+    _register_fonts()
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -71,10 +96,11 @@ def generate_pdf(record, lang: str = "en") -> bytes:
 
     styles = getSampleStyleSheet()
 
-    # ── Custom styles ──
+    # ── Custom styles (DejaVu Sans for full Cyrillic support) ──
     title_style = ParagraphStyle(
         "PDFTitle",
         parent=styles["Title"],
+        fontName=_CYR_FONT_BOLD,
         fontSize=22,
         textColor=_INDIGO,
         spaceAfter=4 * mm,
@@ -82,6 +108,7 @@ def generate_pdf(record, lang: str = "en") -> bytes:
     subtitle_style = ParagraphStyle(
         "PDFSubtitle",
         parent=styles["Normal"],
+        fontName=_CYR_FONT,
         fontSize=10,
         textColor=_GRAY,
         spaceAfter=6 * mm,
@@ -89,6 +116,7 @@ def generate_pdf(record, lang: str = "en") -> bytes:
     heading_style = ParagraphStyle(
         "PDFHeading",
         parent=styles["Heading2"],
+        fontName=_CYR_FONT_BOLD,
         fontSize=13,
         textColor=colors.HexColor("#1e293b"),
         spaceBefore=6 * mm,
@@ -97,6 +125,7 @@ def generate_pdf(record, lang: str = "en") -> bytes:
     body_style = ParagraphStyle(
         "PDFBody",
         parent=styles["Normal"],
+        fontName=_CYR_FONT,
         fontSize=10,
         leading=14,
         textColor=colors.HexColor("#374151"),
@@ -104,6 +133,7 @@ def generate_pdf(record, lang: str = "en") -> bytes:
     small_style = ParagraphStyle(
         "PDFSmall",
         parent=styles["Normal"],
+        fontName=_CYR_FONT,
         fontSize=8,
         textColor=_GRAY,
     )
@@ -204,7 +234,7 @@ def generate_pdf(record, lang: str = "en") -> bytes:
         score_data.append([
             Paragraph(label, body_style),
             Paragraph(f"<b>{score_str}</b>", body_style),
-            Paragraph(f'<font face="Courier" size="8">{bar_str}</font>', body_style),
+            Paragraph(f'<font face="{_CYR_FONT}" size="8">{bar_str}</font>', body_style),
         ])
 
     score_table = Table(score_data, colWidths=["30%", "15%", "55%"])
