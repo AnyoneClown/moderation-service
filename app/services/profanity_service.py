@@ -87,6 +87,53 @@ _UA_PATTERN = re.compile(
     re.I | re.UNICODE,
 )
 
+# ── Ukrainian toxic / hateful language (insults, threats, hate speech) ──
+# These are NOT vulgar words but still indicate harmful content.
+# Each tuple: (compiled regex, weight 0.0–1.0)
+_UA_TOXIC_PATTERNS: list[tuple[re.Pattern, float]] = [
+    # Insults / dehumanisation
+    (re.compile(r'\b(ідіот[иа]?|ідіотськ)\b', re.I), 0.45),
+    (re.compile(r'\b(дур(ень|ні|не[ць]|н[яі]|ак))\b', re.I), 0.40),
+    (re.compile(r'\b(кретин[иа]?|імбецил[иа]?|дебіл[иа]?)\b', re.I), 0.45),
+    (re.compile(r'\b(тупи[йіцх]|тупак)\b', re.I), 0.35),
+    (re.compile(r'\b(нікчем[аний]|покидьк[иа]?|відстал[иій])\b', re.I), 0.40),
+    (re.compile(r'\b(бидл[оа]|швал[ьі]|мраз[ьіи]|наволоч)\b', re.I), 0.50),
+    (re.compile(r'\b(виродк[иа]?|нелюд[иа]?|потвор[аи]?)\b', re.I), 0.50),
+    (re.compile(r'\b(огид[аний]|мерзот[аний]|паскуд[аний])\b', re.I), 0.45),
+    (re.compile(r'\b(нікчемн|жалюгідн|убог[иій])\b', re.I), 0.35),
+    (re.compile(r'\b(недоумк[иа]?|недоум[ок])\b', re.I), 0.40),
+
+    # Threats / wishes of harm
+    (re.compile(r'(сподіваюсь|надіюсь|бажаю|хочу).{0,30}(жахлив|страшн|погано|зло|смерт|помер|здох)', re.I), 0.70),
+    (re.compile(r'(щоб\s*(ти|ви|вони)\s*(здох|помер|стражда|мучи|зник))', re.I), 0.80),
+    (re.compile(r'(трапи(ться|лось)\s*(щось\s*)?(жахлив|страшн|погано|лих[оіе]))', re.I), 0.65),
+    (re.compile(r'(вб\'?ю|заб\'?ю|зарі[жз]|знищ[уі]|закопа[юєтиі]|прибити)', re.I), 0.80),
+    (re.compile(r'(світ\s*(був\s*би|буде|стане)\s*(кращ|ліпш).{0,20}без)', re.I), 0.75),
+    (re.compile(r'(не\s*заслуговуєш|не\s*заслуговують|не\s*варт[иі])\s*(жити|існуват|жит)', re.I), 0.80),
+    (re.compile(r'(здохн|подихай|подохн|зникни|пішов?\s*геть)', re.I), 0.60),
+
+    # General hate / hostility
+    (re.compile(r'\b(ненавидж[уі]|ненависть|ненавис[тн])\b', re.I), 0.55),
+    (re.compile(r'\b(огидн[иій]|бридк[иій]|відраз[аи]|гидот[аі])\b', re.I), 0.40),
+    (re.compile(r'(такі[хм]?\s*(як\s*)?(ти|ви)\s*(не\s*повинн|не\s*має|не\s*потрібн))', re.I), 0.55),
+    (re.compile(r'(горіти?\s*(в\s*пеклі|у\s*пеклі)|геть\s*(звідси|з\s*країни))', re.I), 0.60),
+]
+
+
+def _check_ua_toxic(text: str) -> tuple[float, int]:
+    """
+    Scan text for Ukrainian toxic/hateful patterns.
+    Returns (max_weight_matched, total_match_count).
+    """
+    total = 0
+    max_w = 0.0
+    for pat, weight in _UA_TOXIC_PATTERNS:
+        matches = pat.findall(text)
+        if matches:
+            total += len(matches)
+            max_w = max(max_w, weight)
+    return max_w, total
+
 
 def _calculate_severity(original: str, censored: str) -> float:
     """
@@ -143,7 +190,10 @@ async def check_profanity(text: str) -> dict:
         # ── Ukrainian detection (regex) ──
         contains_profanity_ua, ua_match_count = _check_ukrainian_profanity(text)
 
-        # Censor Ukrainian matches in the censored output
+        # ── Ukrainian toxic / hateful language ──
+        ua_toxic_weight, ua_toxic_count = _check_ua_toxic(text)
+
+        # Censor Ukrainian profanity matches in the censored output
         if contains_profanity_ua:
             censored = _UA_PATTERN.sub(
                 lambda m: " " + "*" * len(m.group(1)),
@@ -151,28 +201,36 @@ async def check_profanity(text: str) -> dict:
             )
 
         contains_profanity = contains_profanity_en or contains_profanity_ua
+        has_toxic_ua = ua_toxic_count > 0
 
-        if contains_profanity:
+        if contains_profanity or has_toxic_ua:
             if contains_profanity_en:
                 severity = _calculate_severity(text, censored)
-            else:
-                # Ukrainian-only: estimate severity from match count vs word count
+            elif contains_profanity_ua:
+                # Ukrainian profanity: estimate severity from match count vs word count
                 word_count = len(re.findall(r'\b\w+\b', text.lower()))
                 severity = min(ua_match_count / max(word_count, 1), 1.0)
-            # Ensure minimum score of 0.5 when profanity is detected
-            score = max(severity, 0.5)
+            else:
+                severity = 0.0
+
+            # Blend in the Ukrainian toxic keyword weight
+            # The toxic weight (0.0-0.8) directly reflects how severe the match is
+            score = max(severity, ua_toxic_weight, 0.5 if contains_profanity else 0.0)
         else:
             score = 0.0
 
         return {
             "score": round(score, 4),
-            "flagged": contains_profanity,
+            "flagged": contains_profanity or has_toxic_ua,
             "censored_text": censored,
             "details": {
                 "contains_profanity": contains_profanity,
                 "en_profanity": contains_profanity_en,
                 "ua_profanity": contains_profanity_ua,
                 "ua_match_count": ua_match_count,
+                "ua_toxic_detected": has_toxic_ua,
+                "ua_toxic_matches": ua_toxic_count,
+                "ua_toxic_max_weight": round(ua_toxic_weight, 4),
                 "severity": round(score, 4),
                 "original_length": len(text),
             },

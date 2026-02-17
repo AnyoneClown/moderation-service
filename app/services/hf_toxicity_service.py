@@ -1,12 +1,12 @@
 """
 app/services/hf_toxicity_service.py — HuggingFace toxicity detection.
 
-Uses the ``martin-ha/toxic-comment-model`` model via the HuggingFace
-Inference API to classify text for toxicity (hate speech, threats,
-insults, identity attacks, etc.).
+Uses the ``textdetox/xlmr-large-toxicity-classifier`` model via the
+HuggingFace Inference API to classify text for toxicity (hate speech,
+threats, insults, identity attacks, etc.).
 
-This replaces the OpenAI moderation endpoint with a free,
-open-source alternative that requires only an HF API token.
+This multilingual model (XLM-RoBERTa) supports 100+ languages including
+English and Ukrainian.
 """
 
 import httpx
@@ -16,19 +16,21 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# HuggingFace Inference API URL — toxic comment classifier
+# HuggingFace Inference API URL — multilingual toxicity classifier
+# XLM-RoBERTa based model that supports 100+ languages incl. Ukrainian
 HF_TOXICITY_URL = (
     "https://router.huggingface.co/hf-inference/models/"
-    "martin-ha/toxic-comment-model"
+    "textdetox/xlmr-large-toxicity-classifier"
 )
 
 
 async def check_hf_toxicity(text: str) -> dict:
     """
-    Classify *text* for toxicity via the HuggingFace toxic-comment model.
+    Classify *text* for toxicity via the HuggingFace multilingual model.
 
-    The model outputs labels ``toxic`` and ``non-toxic`` with confidence
+    The model outputs labels ``toxic`` and ``neutral`` with confidence
     scores.  We return the ``toxic`` probability as the risk score.
+    Supports English, Ukrainian and 100+ other languages.
 
     Returns
     -------
@@ -57,10 +59,11 @@ async def check_hf_toxicity(text: str) -> dict:
         labels: list[dict] = data[0] if isinstance(data, list) and data else data
 
         # Extract the 'toxic' probability
+        # Different models use different label names
         toxic_score = 0.0
         for item in labels:
             label = item.get("label", "").lower()
-            if label in ("toxic", "label_1"):
+            if label in ("toxic", "label_1", "1"):
                 toxic_score = item["score"]
                 break
 
