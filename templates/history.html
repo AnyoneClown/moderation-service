@@ -1,0 +1,64 @@
+<!-- templates/history.html — Table of past moderation records -->
+{% extends "base.html" %}
+
+{% block title %}History — AI Content Moderation{% endblock %}
+
+{% block content %}
+<div class="max-w-4xl mx-auto">
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">Moderation History</h1>
+    <a href="/" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 transition">
+      + New Analysis
+    </a>
+  </div>
+
+  {% if records | length == 0 %}
+  <div class="text-center py-20 text-gray-400">
+    <p class="text-lg">No records yet.</p>
+    <p class="text-sm mt-1">Submit some text on the <a href="/" class="text-indigo-500 hover:underline">Dashboard</a> to get started.</p>
+  </div>
+  {% else %}
+  <div class="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
+    <table class="min-w-full text-sm">
+      <thead class="bg-gray-100 text-gray-600 text-xs uppercase tracking-wide">
+        <tr>
+          <th class="px-4 py-3 text-left">Text (preview)</th>
+          <th class="px-4 py-3 text-center">Score</th>
+          <th class="px-4 py-3 text-center">Status</th>
+          <th class="px-4 py-3 text-center">Partial?</th>
+          <th class="px-4 py-3 text-left">Date</th>
+          <th class="px-4 py-3"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-gray-100 bg-white">
+        {% for r in records %}
+        <tr class="hover:bg-gray-50 transition">
+          <td class="px-4 py-3 max-w-xs truncate" title="{{ r.text }}">{{ r.text[:80] }}{% if r.text|length > 80 %}…{% endif %}</td>
+          <td class="px-4 py-3 text-center font-mono">{{ "%.2f"|format(r.final_score) }}</td>
+          <td class="px-4 py-3 text-center">
+            <span class="inline-block rounded-full px-3 py-0.5 text-xs font-semibold
+              {% if r.status == 'APPROVED' %}badge-approved
+              {% elif r.status == 'FLAGGED' %}badge-flagged
+              {% else %}badge-rejected{% endif %}">
+              {{ r.status }}
+            </span>
+          </td>
+          <td class="px-4 py-3 text-center">
+            {% if r.is_partial == "true" %}
+              <span class="text-amber-500 font-semibold">⚠ Yes</span>
+            {% else %}
+              <span class="text-gray-300">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-gray-500">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="px-4 py-3">
+            <a href="/result/{{ r.id }}" class="text-indigo-600 hover:underline text-xs font-medium">Details →</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,26 @@
+# ── Python dependencies for AI Content Moderation System ──
+
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20       # Required for Form(...) parsing
+jinja2==3.1.5
+
+# Async HTTP client (for calling HuggingFace APIs)
+httpx==0.28.1
+
+# Database (async PostgreSQL)
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+
+# Configuration
+pydantic-settings==2.7.1
+
+# Local profanity filter
+better-profanity==0.7.0
+
+# Sentiment analysis (VADER)
+nltk==3.9.1
+
+# Static file serving
+aiofiles==24.1.0
