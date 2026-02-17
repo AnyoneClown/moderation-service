@@ -9,6 +9,7 @@ reliability backbone of the system.
 Enhancements over the basic binary check:
   - Severity scoring (0.0 – 1.0) based on the ratio of censored words
   - Censored text output for display
+  - Ukrainian profanity detection via a custom word list
 """
 
 import re
@@ -17,8 +18,74 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# ── Load the default word list on module import ──
+# ── Load the default English word list on module import ──
 profanity.load_censor_words()
+
+# ── Ukrainian profanity word list ──
+# Common Ukrainian swear / vulgar words and their morphological variants.
+# This runs as a secondary regex-based check alongside better-profanity.
+_UA_PROFANITY_WORDS: list[str] = [
+    # Core vulgar roots and common inflections
+    r"бля[тдь]",
+    r"блять",
+    r"сук[аиіо]",
+    r"хуй",
+    r"хує",
+    r"хуя",
+    r"хуї",
+    r"хуйн[яюіі]",
+    r"хуйов",
+    r"піздець",
+    r"пізд[аеуюоі]",
+    r"піздат",
+    r"їб[аеуіо]",
+    r"єб[аеуіо]",
+    r"ебат",
+    r"йоб",
+    r"їбан",
+    r"єбан",
+    r"заїб",
+    r"заєб",
+    r"наїб",
+    r"наєб",
+    r"виїб",
+    r"відїб",
+    r"розїб",
+    r"підїб",
+    r"доїб",
+    r"перєб",
+    r"переїб",
+    r"оїб",
+    r"залуп",
+    r"муд[аоіи]",
+    r"мудак",
+    r"мудил",
+    r"гандон",
+    r"гнид[аиі]",
+    r"довбо[йє]б",
+    r"стерв[аоі]",
+    r"падлюк",
+    r"шлюх[аиі]",
+    r"курв[аиі]",
+    r"дрочи",
+    r"дроч",
+    r"дебіл",
+    r"відстал",
+    r"тупиц",
+    r"ублюд",
+    r"виблядок",
+    r"виблядк",
+    r"срак[аиі]",
+    r"сран",
+    r"задниц",
+    r"жоп[аиіу]",
+    r"засран",
+]
+
+_UA_PATTERN = re.compile(
+    r"(?:^|\s|[^\wа-яіїєґ'])(" + "|".join(_UA_PROFANITY_WORDS) + r")",
+    re.I | re.UNICODE,
+)
 
 
 def _calculate_severity(original: str, censored: str) -> float:
@@ -43,9 +110,19 @@ def _calculate_severity(original: str, censored: str) -> float:
     return min(round(ratio, 4), 1.0)
 
 
+def _check_ukrainian_profanity(text: str) -> tuple[bool, int]:
+    """
+    Check text for Ukrainian profanity using regex patterns.
+    Returns (contains_profanity, match_count).
+    """
+    matches = _UA_PATTERN.findall(text)
+    return bool(matches), len(matches)
+
+
 async def check_profanity(text: str) -> dict:
     """
-    Check *text* for profanity using the local word list.
+    Check *text* for profanity using the local English word list
+    **and** a custom Ukrainian word list.
 
     Returns
     -------
@@ -59,11 +136,29 @@ async def check_profanity(text: str) -> dict:
         }
     """
     try:
-        contains_profanity = profanity.contains_profanity(text)
+        # ── English detection (better-profanity) ──
+        contains_profanity_en = profanity.contains_profanity(text)
         censored = profanity.censor(text)
 
+        # ── Ukrainian detection (regex) ──
+        contains_profanity_ua, ua_match_count = _check_ukrainian_profanity(text)
+
+        # Censor Ukrainian matches in the censored output
+        if contains_profanity_ua:
+            censored = _UA_PATTERN.sub(
+                lambda m: " " + "*" * len(m.group(1)),
+                censored,
+            )
+
+        contains_profanity = contains_profanity_en or contains_profanity_ua
+
         if contains_profanity:
-            severity = _calculate_severity(text, censored)
+            if contains_profanity_en:
+                severity = _calculate_severity(text, censored)
+            else:
+                # Ukrainian-only: estimate severity from match count vs word count
+                word_count = len(re.findall(r'\b\w+\b', text.lower()))
+                severity = min(ua_match_count / max(word_count, 1), 1.0)
             # Ensure minimum score of 0.5 when profanity is detected
             score = max(severity, 0.5)
         else:
@@ -75,6 +170,9 @@ async def check_profanity(text: str) -> dict:
             "censored_text": censored,
             "details": {
                 "contains_profanity": contains_profanity,
+                "en_profanity": contains_profanity_en,
+                "ua_profanity": contains_profanity_ua,
+                "ua_match_count": ua_match_count,
                 "severity": round(score, 4),
                 "original_length": len(text),
             },

@@ -1,10 +1,10 @@
 <!-- templates/base.html — Shared layout with Tailwind CDN -->
 <!DOCTYPE html>
-<html lang="en" class="h-full">
+<html lang="{{ lang|default('en') }}" class="h-full">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}AI Content Moderation{% endblock %}</title>
+  <title>{% block title %}{{ t.site_title }}{% endblock %}</title>
   <!-- Tailwind CSS via CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -19,10 +19,16 @@
   <!-- ── Navigation bar ── -->
   <nav class="bg-indigo-700 text-white shadow-lg">
     <div class="mx-auto max-w-5xl flex items-center justify-between px-6 py-4">
-      <a href="/" class="text-xl font-bold tracking-tight">🛡️ AI Moderation</a>
-      <div class="flex gap-6 text-sm font-medium">
-        <a href="/" class="hover:text-indigo-200 transition">Dashboard</a>
-        <a href="/history" class="hover:text-indigo-200 transition">History</a>
+      <a href="/" class="text-xl font-bold tracking-tight">{{ t.nav_brand }}</a>
+      <div class="flex items-center gap-6 text-sm font-medium">
+        <a href="/" class="hover:text-indigo-200 transition">{{ t.nav_dashboard }}</a>
+        <a href="/history" class="hover:text-indigo-200 transition">{{ t.nav_history }}</a>
+        <!-- Language toggle -->
+        <a href="/set-lang/{{ t.lang_switch_to }}"
+           class="flex items-center gap-1 rounded-full border border-indigo-400 bg-indigo-600 px-3 py-1 text-xs font-bold hover:bg-indigo-500 transition"
+           title="Switch language">
+          🌐 {{ t.lang_label }}
+        </a>
       </div>
     </div>
   </nav>
@@ -34,7 +40,7 @@
 
   <!-- ── Footer ── -->
   <footer class="text-center text-xs text-gray-400 py-6">
-    AI Content Moderation System &mdash; Diploma Project &copy; 2026
+    {{ t.footer }}
   </footer>
 
 </body>

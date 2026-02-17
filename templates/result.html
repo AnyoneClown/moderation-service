@@ -1,21 +1,20 @@
 <!-- templates/result.html — Detailed moderation result for a single record -->
 {% extends "base.html" %}
 
-{% block title %}Result — AI Content Moderation{% endblock %}
+{% block title %}{{ t.result_title }} — {{ t.site_title }}{% endblock %}
 
 {% block content %}
 <div class="max-w-3xl mx-auto">
 
   <!-- Back link -->
-  <a href="/" class="text-indigo-600 hover:underline text-sm">&larr; New analysis</a>
+  <a href="/" class="text-indigo-600 hover:underline text-sm">{{ t.back_new }}</a>
 
-  <h1 class="text-2xl font-bold mt-4 mb-6">Moderation Result</h1>
+  <h1 class="text-2xl font-bold mt-4 mb-6">{{ t.result_title }}</h1>
 
   <!-- ── Partial-result warning ── -->
   {% if record.is_partial == "true" %}
   <div class="mb-6 rounded-lg border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-800">
-    ⚠️ <strong>Partial Result</strong> — One or more external APIs were unavailable.
-    The score was calculated using the remaining sources only.
+    {{ t.partial_warning | safe }}
   </div>
   {% endif %}
 
@@ -27,7 +26,7 @@
 
     <div class="flex items-center justify-between">
       <div>
-        <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">Final Verdict</p>
+        <p class="text-sm font-medium text-gray-500 uppercase tracking-wide">{{ t.final_verdict }}</p>
         <p class="text-4xl font-extrabold mt-1
           {% if record.status == 'APPROVED' %}text-green-700
           {% elif record.status == 'FLAGGED' %}text-yellow-700
@@ -36,25 +35,47 @@
         </p>
       </div>
       <div class="text-right">
-        <p class="text-sm text-gray-500">Aggregate Score</p>
+        <p class="text-sm text-gray-500">{{ t.aggregate_score }}</p>
         <p class="text-3xl font-bold text-gray-800">{{ "%.2f"|format(record.final_score) }}</p>
       </div>
+    </div>
+
+    <!-- Input type badge -->
+    <div class="mt-3">
+      <span class="inline-block rounded-full bg-white/70 border border-gray-200 px-3 py-0.5 text-xs font-medium text-gray-500 uppercase">
+        {% if record.input_type == 'both' %}{{ t.input_type_both }}
+        {% elif record.input_type == 'image' %}{{ t.input_type_image }}
+        {% else %}{{ t.input_type_text }}{% endif %}
+      </span>
     </div>
   </div>
 
   <!-- ── Submitted text ── -->
+  {% if record.text %}
   <div class="mb-8">
-    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Submitted Text</h2>
+    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">{{ t.submitted_text }}</h2>
     <div class="rounded-lg border border-gray-200 bg-white p-4 text-sm whitespace-pre-wrap">{{ record.text }}</div>
   </div>
+  {% endif %}
+
+  <!-- ── Uploaded image ── -->
+  {% if record.image_filename %}
+  <div class="mb-8">
+    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">{{ t.uploaded_image }}</h2>
+    <div class="rounded-lg border border-gray-200 bg-white p-4">
+      <img src="/uploads/{{ record.image_filename }}" alt="Uploaded image" class="max-h-64 rounded-lg shadow-sm mx-auto" />
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ── Source score breakdown ── -->
-  <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Source Breakdown</h2>
+  <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">{{ t.source_breakdown }}</h2>
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
 
+    {% if record.input_type != 'image' %}
     <!-- Toxicity -->
     <div class="rounded-lg border bg-white p-4 shadow-sm">
-      <p class="text-xs font-medium text-gray-400 uppercase">🧪 Toxicity (HF)</p>
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_toxicity }}</p>
       <p class="text-2xl font-bold mt-1">
         {% if record.toxicity_score is not none %}{{ "%.4f"|format(record.toxicity_score) }}{% else %}<span class="text-gray-300">N/A</span>{% endif %}
       </p>
@@ -66,7 +87,7 @@
 
     <!-- Spam -->
     <div class="rounded-lg border bg-white p-4 shadow-sm">
-      <p class="text-xs font-medium text-gray-400 uppercase">📧 Spam (HF)</p>
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_spam }}</p>
       <p class="text-2xl font-bold mt-1">
         {% if record.spam_score is not none %}{{ "%.4f"|format(record.spam_score) }}{% else %}<span class="text-gray-300">N/A</span>{% endif %}
       </p>
@@ -78,69 +99,118 @@
 
     <!-- Profanity -->
     <div class="rounded-lg border bg-white p-4 shadow-sm">
-      <p class="text-xs font-medium text-gray-400 uppercase">🤬 Profanity</p>
-      <p class="text-2xl font-bold mt-1">{{ "%.4f"|format(record.profanity_score) }}</p>
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_profanity }}</p>
+      <p class="text-2xl font-bold mt-1">{{ "%.4f"|format(record.profanity_score or 0) }}</p>
       <div class="mt-2 h-2 rounded-full bg-gray-200 overflow-hidden">
-        <div class="h-full rounded-full {% if record.profanity_score >= 0.55 %}bg-red-500{% elif record.profanity_score >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+        <div class="h-full rounded-full {% if (record.profanity_score or 0) >= 0.55 %}bg-red-500{% elif (record.profanity_score or 0) >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
              style="width: {{ '%.0f'|format((record.profanity_score or 0) * 100) }}%"></div>
       </div>
     </div>
 
     <!-- Fraud -->
     <div class="rounded-lg border bg-white p-4 shadow-sm">
-      <p class="text-xs font-medium text-gray-400 uppercase">🕵️ Fraud / Scam</p>
-      <p class="text-2xl font-bold mt-1">{{ "%.4f"|format(record.fraud_score) }}</p>
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_fraud }}</p>
+      <p class="text-2xl font-bold mt-1">{{ "%.4f"|format(record.fraud_score or 0) }}</p>
       <div class="mt-2 h-2 rounded-full bg-gray-200 overflow-hidden">
-        <div class="h-full rounded-full {% if record.fraud_score >= 0.55 %}bg-red-500{% elif record.fraud_score >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+        <div class="h-full rounded-full {% if (record.fraud_score or 0) >= 0.55 %}bg-red-500{% elif (record.fraud_score or 0) >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
              style="width: {{ '%.0f'|format((record.fraud_score or 0) * 100) }}%"></div>
       </div>
     </div>
 
     <!-- Sentiment -->
     <div class="rounded-lg border bg-white p-4 shadow-sm">
-      <p class="text-xs font-medium text-gray-400 uppercase">💬 Sentiment Risk</p>
-      <p class="text-2xl font-bold mt-1">{{ "%.4f"|format(record.sentiment_score) }}</p>
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_sentiment }}</p>
+      <p class="text-2xl font-bold mt-1">{{ "%.4f"|format(record.sentiment_score or 0) }}</p>
       <div class="mt-2 h-2 rounded-full bg-gray-200 overflow-hidden">
-        <div class="h-full rounded-full {% if record.sentiment_score >= 0.55 %}bg-red-500{% elif record.sentiment_score >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+        <div class="h-full rounded-full {% if (record.sentiment_score or 0) >= 0.55 %}bg-red-500{% elif (record.sentiment_score or 0) >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
              style="width: {{ '%.0f'|format((record.sentiment_score or 0) * 100) }}%"></div>
       </div>
     </div>
+    {% endif %}
+
+    <!-- ── Image scores (when image was uploaded) ── -->
+    {% if record.image_filename %}
+    <!-- Image NSFW -->
+    <div class="rounded-lg border bg-white p-4 shadow-sm">
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_nsfw }}</p>
+      <p class="text-2xl font-bold mt-1">
+        {% if record.image_nsfw_score is not none %}{{ "%.4f"|format(record.image_nsfw_score) }}{% else %}<span class="text-gray-300">N/A</span>{% endif %}
+      </p>
+      <div class="mt-2 h-2 rounded-full bg-gray-200 overflow-hidden">
+        <div class="h-full rounded-full {% if record.image_nsfw_score is not none and record.image_nsfw_score >= 0.55 %}bg-red-500{% elif record.image_nsfw_score is not none and record.image_nsfw_score >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+             style="width: {{ '%.0f'|format((record.image_nsfw_score or 0) * 100) }}%"></div>
+      </div>
+    </div>
+
+    <!-- Image Scam -->
+    <div class="rounded-lg border bg-white p-4 shadow-sm">
+      <p class="text-xs font-medium text-gray-400 uppercase">{{ t.lbl_img_scam }}</p>
+      <p class="text-2xl font-bold mt-1">
+        {% if record.image_scam_score is not none %}{{ "%.4f"|format(record.image_scam_score) }}{% else %}<span class="text-gray-300">N/A</span>{% endif %}
+      </p>
+      <div class="mt-2 h-2 rounded-full bg-gray-200 overflow-hidden">
+        <div class="h-full rounded-full {% if record.image_scam_score is not none and record.image_scam_score >= 0.55 %}bg-red-500{% elif record.image_scam_score is not none and record.image_scam_score >= 0.25 %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+             style="width: {{ '%.0f'|format((record.image_scam_score or 0) * 100) }}%"></div>
+      </div>
+    </div>
+    {% endif %}
   </div>
+
+  <!-- ── Image caption (AI-generated description) ── -->
+  {% if record.image_details and record.image_details.caption and record.image_details.caption.caption %}
+  <div class="mb-8">
+    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">{{ t.ai_caption }}</h2>
+    <div class="rounded-lg border border-gray-200 bg-white p-4 text-sm italic text-gray-600">
+      "{{ record.image_details.caption.caption }}"
+      {% if record.image_details.caption.matches %}
+      <p class="mt-2 text-xs text-amber-600 not-italic">
+        {{ t.suspicious_kw }} {{ record.image_details.caption.matches | join(', ') }}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ── Raw JSON details (collapsible) ── -->
   <details class="mb-8">
     <summary class="cursor-pointer text-sm font-semibold text-indigo-600 hover:underline">
-      Show raw analysis details (JSON)
+      {{ t.show_raw_json }}
     </summary>
     <div class="mt-3 space-y-4">
       {% if record.toxicity_details %}
       <div>
-        <p class="text-xs font-medium text-gray-400 mb-1">Toxicity details</p>
+        <p class="text-xs font-medium text-gray-400 mb-1">{{ t.toxicity_details }}</p>
         <pre class="rounded bg-gray-100 p-3 text-xs overflow-x-auto">{{ record.toxicity_details | tojson(indent=2) }}</pre>
       </div>
       {% endif %}
       {% if record.spam_details %}
       <div>
-        <p class="text-xs font-medium text-gray-400 mb-1">Spam details</p>
+        <p class="text-xs font-medium text-gray-400 mb-1">{{ t.spam_details }}</p>
         <pre class="rounded bg-gray-100 p-3 text-xs overflow-x-auto">{{ record.spam_details | tojson(indent=2) }}</pre>
       </div>
       {% endif %}
       {% if record.profanity_details %}
       <div>
-        <p class="text-xs font-medium text-gray-400 mb-1">Profanity details</p>
+        <p class="text-xs font-medium text-gray-400 mb-1">{{ t.profanity_details }}</p>
         <pre class="rounded bg-gray-100 p-3 text-xs overflow-x-auto">{{ record.profanity_details | tojson(indent=2) }}</pre>
       </div>
       {% endif %}
       {% if record.fraud_details %}
       <div>
-        <p class="text-xs font-medium text-gray-400 mb-1">Fraud / Scam details</p>
+        <p class="text-xs font-medium text-gray-400 mb-1">{{ t.fraud_details }}</p>
         <pre class="rounded bg-gray-100 p-3 text-xs overflow-x-auto">{{ record.fraud_details | tojson(indent=2) }}</pre>
       </div>
       {% endif %}
       {% if record.sentiment_details %}
       <div>
-        <p class="text-xs font-medium text-gray-400 mb-1">Sentiment details</p>
+        <p class="text-xs font-medium text-gray-400 mb-1">{{ t.sentiment_details }}</p>
         <pre class="rounded bg-gray-100 p-3 text-xs overflow-x-auto">{{ record.sentiment_details | tojson(indent=2) }}</pre>
+      </div>
+      {% endif %}
+      {% if record.image_details %}
+      <div>
+        <p class="text-xs font-medium text-gray-400 mb-1">{{ t.image_details }}</p>
+        <pre class="rounded bg-gray-100 p-3 text-xs overflow-x-auto">{{ record.image_details | tojson(indent=2) }}</pre>
       </div>
       {% endif %}
     </div>
@@ -148,16 +218,19 @@
 
   <!-- ── Metadata ── -->
   <p class="text-xs text-gray-400">
-    Record ID: {{ record.id }} &middot;
-    Analysed at: {{ record.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
+    {{ t.record_id_label }} {{ record.id }} &middot;
+    {{ t.analysed_at }} {{ record.created_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}
   </p>
 
-  <div class="mt-6 flex gap-3">
+  <div class="mt-6 flex flex-wrap gap-3">
     <a href="/" class="rounded-lg bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 transition">
-      New Analysis
+      {{ t.btn_new_analysis }}
     </a>
     <a href="/history" class="rounded-lg border border-gray-300 px-5 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100 transition">
-      View History
+      {{ t.btn_view_history }}
+    </a>
+    <a href="/result/{{ record.id }}/pdf" class="rounded-lg border border-indigo-300 bg-indigo-50 px-5 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100 transition">
+      {{ t.btn_export_pdf }}
     </a>
   </div>
 

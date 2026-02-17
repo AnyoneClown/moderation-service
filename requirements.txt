@@ -24,3 +24,9 @@ nltk==3.9.1
 
 # Static file serving
 aiofiles==24.1.0
+
+# PDF report generation
+reportlab==4.1.0
+
+# Image handling
+Pillow==11.1.0

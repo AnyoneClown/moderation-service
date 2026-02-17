@@ -24,14 +24,22 @@ class ModerationRecord(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # ── Input ──
-    text = Column(Text, nullable=False, comment="Original text submitted for moderation")
+    text = Column(Text, nullable=True, comment="Original text submitted for moderation")
+    input_type = Column(String(10), nullable=False, default="text", comment="'text', 'image', or 'both'")
+
+    # ── Uploaded image ──
+    image_filename = Column(String(255), nullable=True, comment="Stored filename for uploaded image")
 
     # ── Per-source scores (0.0 – 1.0 risk scale) ──
     toxicity_score = Column(Float, nullable=True, comment="Toxicity score from HuggingFace model")
     spam_score = Column(Float, nullable=True, comment="Spam probability from HuggingFace model")
-    profanity_score = Column(Float, nullable=False, default=0.0, comment="Profanity severity (0.0–1.0)")
-    fraud_score = Column(Float, nullable=False, default=0.0, comment="Fraud/phishing risk score")
-    sentiment_score = Column(Float, nullable=False, default=0.0, comment="Negative-sentiment risk score")
+    profanity_score = Column(Float, nullable=True, default=0.0, comment="Profanity severity (0.0–1.0)")
+    fraud_score = Column(Float, nullable=True, default=0.0, comment="Fraud/phishing risk score")
+    sentiment_score = Column(Float, nullable=True, default=0.0, comment="Negative-sentiment risk score")
+
+    # ── Image analysis scores ──
+    image_nsfw_score = Column(Float, nullable=True, comment="NSFW probability from HF model")
+    image_scam_score = Column(Float, nullable=True, comment="Scam risk derived from image caption")
 
     # ── Detailed JSON payloads from each provider ──
     toxicity_details = Column(JSON, nullable=True, comment="Full HuggingFace toxicity response")
@@ -39,6 +47,7 @@ class ModerationRecord(Base):
     profanity_details = Column(JSON, nullable=True, comment="Profanity analysis breakdown")
     fraud_details = Column(JSON, nullable=True, comment="Fraud pattern matches")
     sentiment_details = Column(JSON, nullable=True, comment="VADER sentiment breakdown")
+    image_details = Column(JSON, nullable=True, comment="Full image analysis response")
 
     # ── Aggregated result ──
     final_score = Column(Float, nullable=False, comment="Weighted aggregate score")

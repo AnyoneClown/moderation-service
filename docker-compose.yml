@@ -45,6 +45,8 @@ services:
     volumes:
       # Bind-mount source for live reload during development
       - .:/app
+      # Persist uploaded images
+      - uploads:/app/uploads
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -54,3 +56,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:

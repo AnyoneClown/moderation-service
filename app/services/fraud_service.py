@@ -71,6 +71,54 @@ _PATTERNS: list[tuple[re.Pattern, float, str]] = [
     # ── Impersonation / authority fraud ──
     (re.compile(r'\b(irs|fbi|interpol|police|government)\s*(agent|official|department)\b', re.I), 0.20, "impersonation"),
     (re.compile(r'\b(legal\s*action|arrest\s*warrant|court\s*order|lawsuit)\b', re.I), 0.15, "impersonation"),
+
+    # ═══════════════════════════════════════════════════════════
+    # Ukrainian-language fraud / scam / phishing patterns
+    # ═══════════════════════════════════════════════════════════
+
+    # ── Financial scams (UA) ──
+    (re.compile(r'(грошовий\s*переказ|переказ\s*коштів|вестерн\s*юніон)', re.I), 0.30, "financial_scam"),
+    (re.compile(r'(гарантован(ий|а|е|ого)\s*(прибуток|дох[іо]д|повернення)|подвоїти\s*(ваші\s*)?(гроші|кошти))', re.I), 0.35, "financial_scam"),
+    (re.compile(r'(біткоїн|крипт[оа]|btc|ефіріум)\s*(інвест|надісл|відправ|переказ|депозит)', re.I), 0.25, "crypto_scam"),
+    (re.compile(r'(інвестиційн(а|ий)\s*можливість|пасивний\s*дох[іо]д|фінансов[аі]\s*свобод[аі])', re.I), 0.20, "financial_scam"),
+    (re.compile(r'(заробити\s*(швидко|легко|онлайн|багато)|швидк(ий|і)\s*заробіток)', re.I), 0.25, "financial_scam"),
+    (re.compile(r'(без\s*ризик[уі]|100\s*%\s*(гарантовано|безпечно|надійно))', re.I), 0.20, "financial_scam"),
+
+    # ── Phishing / credential harvesting (UA) ──
+    (re.compile(r'(підтверд(іть|и)\s*(ваш|свій)\s*(акаунт|обліков|пароль|електронн|особист))', re.I), 0.30, "phishing"),
+    (re.compile(r'(натисніть\s*(тут|нижче|на\s*посилання)|перейдіть\s*(за\s*посиланням|сюди))', re.I), 0.15, "phishing"),
+    (re.compile(r'(оновіть\s*(ваш[іу]?|свої?)?\s*(платіж|рахунок|білінг|дан[іі]))', re.I), 0.30, "phishing"),
+    (re.compile(r'(увійдіть\s*(негайно|зараз|терміново)|підтвердіть\s*(ваш[уі]?\s*)?(особу|акаунт))', re.I), 0.25, "phishing"),
+    (re.compile(r'(заблоковано|деактивовано|призупинено|несанкціонований\s*доступ|підозріл[аі]\s*активність)', re.I), 0.20, "phishing"),
+
+    # ── Urgency / pressure tactics (UA) ──
+    (re.compile(r'(дійте\s*зараз|обмежений\s*час|терм[іи]н\s*(сплив|закінч))', re.I), 0.15, "urgency"),
+    (re.compile(r'(терміново|негайно|не\s*(зволікайте|гайте|пропустіть|чекайте))', re.I), 0.10, "urgency"),
+    (re.compile(r'(останній\s*шанс|фінальне?\s*(попередження|сповіщення)|залишилось?\s*\d+)', re.I), 0.15, "urgency"),
+    (re.compile(r'(протягом\s*\d+\s*(годин|хвилин|днів)|поки\s*не\s*пізно)', re.I), 0.10, "urgency"),
+
+    # ── Personal information requests (UA) ──
+    (re.compile(r'(ідентифікаційний\s*(код|номер)|інн|іпн)', re.I), 0.35, "pii_request"),
+    (re.compile(r'(номер\s*(картки|кредитк)|дані\s*картки|cvv|cvc|кредитна\s*картка)', re.I), 0.35, "pii_request"),
+    (re.compile(r'(банківськ(ий|і)\s*(рахунок|реквізити|дані)|номер\s*рахунк[уа]|iban|swift)', re.I), 0.30, "pii_request"),
+    (re.compile(r'(номер\s*паспорт[аіу]|дані\s*паспорт[аіу]|посвідчення\s*водія)', re.I), 0.25, "pii_request"),
+    (re.compile(r'(надішліть\s*(мені|нам)\s*(ваш|свій)\s*(пароль|пін|код))', re.I), 0.35, "pii_request"),
+
+    # ── Lottery / prize scams (UA) ──
+    (re.compile(r'(ви\s*(виграли|обран[іі]|отримали\s*приз)|вітаємо\s*!?\s*(ви|переможець))', re.I), 0.30, "lottery_scam"),
+    (re.compile(r'(отримайте\s*(ваш|свій)\s*(приз|нагород[уа]|виграш|подарунок))', re.I), 0.30, "lottery_scam"),
+    (re.compile(r'(лотере[яї]|розіграш|джекпот|головний\s*приз)', re.I), 0.20, "lottery_scam"),
+    (re.compile(r'(безкоштовн(ий|а|е)\s*(подарунок|айфон|ноутбук|гроші|відпочинок))', re.I), 0.20, "lottery_scam"),
+
+    # ── Advance-fee (UA) ──
+    (re.compile(r'(комісі[яї]\s*за\s*обробку|невелик[аий]\s*(комісі[яї]|оплат[аі]|внесок))', re.I), 0.25, "advance_fee"),
+    (re.compile(r'(надішліть\s*(гроші|кошти|оплату)\s*(щоб\s*отримати|спочатку|наперед))', re.I), 0.35, "advance_fee"),
+    (re.compile(r'(спадщин[аі]|спадкоємець|бенефіціар|невитребуван[іі]\s*(кошти|гроші))', re.I), 0.30, "advance_fee"),
+    (re.compile(r'(мільйон[иів]?\s*(доларів|гривень|євро)|мільйони?\s*грн)', re.I), 0.20, "advance_fee"),
+
+    # ── Impersonation / authority fraud (UA) ──
+    (re.compile(r'(поліці[яї]|сбу|прокуратур[аи]|податков[аі]|держав[а-я]+\s*(служб|орган))', re.I), 0.20, "impersonation"),
+    (re.compile(r'(судов(ий|а)\s*(позов|наказ)|арешт|кримінальн[аеі]\s*(справ[аі]|відповідальність))', re.I), 0.15, "impersonation"),
 ]
 
 # Maximum possible raw score (sum of all weights)

@@ -9,9 +9,10 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Install build-time system dependencies (for asyncpg, etc.)
+# Install build-time system dependencies (for asyncpg, Pillow, etc.)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev && \
+    apt-get install -y --no-install-recommends gcc libpq-dev \
+    libjpeg-dev zlib1g-dev libpng-dev libfreetype6-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a virtual environment so we can copy it cleanly later
@@ -28,9 +29,10 @@ FROM python:3.11-slim AS runtime
 
 WORKDIR /app
 
-# Only the minimal runtime libraries (libpq for asyncpg)
+# Only the minimal runtime libraries (libpq for asyncpg, image libs for Pillow)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 && \
+    apt-get install -y --no-install-recommends libpq5 \
+    libjpeg62-turbo libpng16-16 libfreetype6 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual environment from the builder stage
@@ -39,6 +41,9 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application source code
 COPY . .
+
+# Create uploads directory for image storage
+RUN mkdir -p /app/uploads
 
 # Expose the default Uvicorn port
 EXPOSE 8000
