@@ -25,10 +25,7 @@ class ModerationRecord(Base):
 
     # ── Input ──
     text = Column(Text, nullable=True, comment="Original text submitted for moderation")
-    input_type = Column(String(10), nullable=False, default="text", comment="'text', 'image', or 'both'")
-
-    # ── Uploaded image ──
-    image_filename = Column(String(255), nullable=True, comment="Stored filename for uploaded image")
+    input_type = Column(String(10), nullable=False, default="text", comment="'text' only")
 
     # ── Per-source scores (0.0 – 1.0 risk scale) ──
     toxicity_score = Column(Float, nullable=True, comment="Toxicity score from HuggingFace model")
@@ -37,17 +34,12 @@ class ModerationRecord(Base):
     fraud_score = Column(Float, nullable=True, default=0.0, comment="Fraud/phishing risk score")
     sentiment_score = Column(Float, nullable=True, default=0.0, comment="Negative-sentiment risk score")
 
-    # ── Image analysis scores ──
-    image_nsfw_score = Column(Float, nullable=True, comment="NSFW probability from HF model")
-    image_scam_score = Column(Float, nullable=True, comment="Scam risk derived from image caption")
-
     # ── Detailed JSON payloads from each provider ──
     toxicity_details = Column(JSON, nullable=True, comment="Full HuggingFace toxicity response")
     spam_details = Column(JSON, nullable=True, comment="Full HuggingFace spam response")
     profanity_details = Column(JSON, nullable=True, comment="Profanity analysis breakdown")
     fraud_details = Column(JSON, nullable=True, comment="Fraud pattern matches")
     sentiment_details = Column(JSON, nullable=True, comment="VADER sentiment breakdown")
-    image_details = Column(JSON, nullable=True, comment="Full image analysis response")
 
     # ── Aggregated result ──
     final_score = Column(Float, nullable=False, comment="Weighted aggregate score")

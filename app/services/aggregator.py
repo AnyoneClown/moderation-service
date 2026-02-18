@@ -1,11 +1,10 @@
 """
 app/services/aggregator.py — Scoring aggregator & decision engine.
 
-Combines results from **five text** moderation sources (and optionally
-an **image analysis** source) into a single weighted score and maps it
-to a human-readable status: APPROVED, FLAGGED, or REJECTED.
+Combines results from **five text** moderation sources into a single weighted score
+and maps it to a human-readable status: APPROVED, FLAGGED, or REJECTED.
 
-Text scoring weights (when no image):
+Text scoring weights:
     ┌─────────────────────┬────────┐
     │ Source               │ Weight │
     ├─────────────────────┼────────┤
@@ -16,13 +15,17 @@ Text scoring weights (when no image):
     │ Sentiment (VADER)    │  0.10  │
     └─────────────────────┴────────┘
 
-When an image is also provided, the final score is:
-    final = 0.60 × text_score + 0.40 × image_score
-
 Decision thresholds:
     score < 0.25  → APPROVED
     score < 0.55  → FLAGGED
     score ≥ 0.55  → REJECTED
+
+Critical-score overrides (applied *after* the weighted average):
+    Any single source score ≥ 0.75  → at least REJECTED
+    Any single source score ≥ 0.45  → at least FLAGGED
+
+This prevents obvious fraud/spam/toxicity from being diluted
+into an APPROVED verdict when the other sources score low.
 
 If an external API is unavailable the weight is redistributed among
 the remaining sources so that the final score is still on a 0–1 scale.
@@ -37,7 +40,6 @@ from app.services.hf_toxicity_service import check_hf_toxicity
 from app.services.profanity_service import check_profanity
 from app.services.fraud_service import check_fraud
 from app.services.sentiment_service import check_sentiment
-from app.services.image_service import analyze_image
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +52,15 @@ WEIGHTS = {
     "sentiment": 0.10,
 }
 
-# When both text + image are provided
-TEXT_IMAGE_BLEND = 0.60   # text weight
-IMAGE_BLEND = 0.40        # image weight
-
 # ── Decision thresholds ──
 THRESHOLD_APPROVED = 0.25
 THRESHOLD_FLAGGED = 0.55  # scores ≥ this are REJECTED
+
+# ── Critical single-source overrides ──
+# If ANY individual source score meets these thresholds the verdict
+# is elevated regardless of the weighted average.
+CRITICAL_REJECT = 0.75   # single source ≥ this → REJECTED
+CRITICAL_FLAG   = 0.45   # single source ≥ this → at least FLAGGED
 
 
 async def _run_text_checks(text: str) -> tuple[dict, dict, dict, dict, dict, bool, float]:
@@ -98,90 +102,67 @@ async def _run_text_checks(text: str) -> tuple[dict, dict, dict, dict, dict, boo
     sources["fraud"] = fraud_result["score"]
     sources["sentiment"] = sentiment_result["score"]
 
-    active_weight_sum = sum(WEIGHTS[src] for src in sources)
-    if active_weight_sum == 0:
-        text_score = profanity_result["score"]
+    # Calculate weighted score based on available sources
+    weighted_score = 0.0
+    active_weight_sum = 0.0
+
+    # First pass: sum weights of available sources
+    for src in sources:
+        if sources[src] is not None:
+            active_weight_sum += WEIGHTS[src]
+    
+    # Second pass: compute weighted score
+    if active_weight_sum > 0:
+        for src, score in sources.items():
+            if score is not None:
+                weighted_score += (WEIGHTS[src] / active_weight_sum) * score
     else:
-        text_score = sum(
-            (WEIGHTS[src] / active_weight_sum) * score
-            for src, score in sources.items()
-        )
-    text_score = round(text_score, 4)
+        # Fallback if no sources are available (should replace with error handling if critical)
+        weighted_score = 0.0
+
+    final_score = round(weighted_score, 4)
 
     return (
         toxicity_result, spam_result, profanity_result,
-        fraud_result, sentiment_result, is_partial, text_score,
+        fraud_result, sentiment_result, is_partial, final_score,
     )
 
 
-async def aggregate_moderation(
-    text: Optional[str] = None,
-    image_bytes: Optional[bytes] = None,
-) -> dict:
+async def aggregate_moderation(text: str) -> dict:
     """
-    Run text and/or image moderation checks **concurrently** and
-    produce a combined moderation verdict.
+    Run text moderation checks **concurrently** and produce a moderator verdict.
 
     Parameters
     ----------
-    text : str, optional
+    text : str
         Text content to moderate.
-    image_bytes : bytes, optional
-        Raw image bytes to moderate.
-
-    At least one of ``text`` or ``image_bytes`` must be provided.
 
     Returns
     -------
     dict  (ready to be stored in the DB and rendered on the frontend)
     """
+    
+    if not text or not text.strip():
+        # Should ideally not happen if validated upstream, but safe fallback
+        return {
+            "text": "",
+            "input_type": "text",
+            "toxicity": {"score": None, "details": None},
+            "spam": {"score": None, "details": None},
+            "profanity": {"score": 0.0, "details": None},
+            "fraud": {"score": 0.0, "details": None},
+            "sentiment": {"score": 0.0, "details": None},
+            "final_score": 0.0,
+            "status": "APPROVED",
+            "is_partial": False,
+        }
 
-    has_text = bool(text and text.strip())
-    has_image = bool(image_bytes)
+    (
+        toxicity_result, spam_result, profanity_result,
+        fraud_result, sentiment_result, is_partial, final_score,
+    ) = await _run_text_checks(text)
 
-    # ── Determine input type ──
-    if has_text and has_image:
-        input_type = "both"
-    elif has_image:
-        input_type = "image"
-    else:
-        input_type = "text"
-
-    # ── Placeholders ──
-    _empty = {"score": None, "details": None, "error": "Not applicable"}
-    toxicity_result = spam_result = profanity_result = fraud_result = sentiment_result = _empty
-    image_result: Optional[dict] = None
-    is_partial = False
-    text_score = 0.0
-    image_score = 0.0
-
-    # ── Run checks ──
-    if has_text and has_image:
-        (
-            toxicity_result, spam_result, profanity_result,
-            fraud_result, sentiment_result, text_partial, text_score,
-        ), image_result = await asyncio.gather(
-            _run_text_checks(text),
-            analyze_image(image_bytes),
-        )
-        is_partial = text_partial or image_result.get("is_partial", False)
-        image_score = image_result["combined_score"]
-        final_score = round(TEXT_IMAGE_BLEND * text_score + IMAGE_BLEND * image_score, 4)
-
-    elif has_text:
-        (
-            toxicity_result, spam_result, profanity_result,
-            fraud_result, sentiment_result, is_partial, text_score,
-        ) = await _run_text_checks(text)
-        final_score = text_score
-
-    else:  # image only
-        image_result = await analyze_image(image_bytes)
-        is_partial = image_result.get("is_partial", False)
-        image_score = image_result["combined_score"]
-        final_score = image_score
-
-    # ── Map score to decision status ──
+    # ── Map score to decision status (weighted average) ──
     if final_score < THRESHOLD_APPROVED:
         status = "APPROVED"
     elif final_score < THRESHOLD_FLAGGED:
@@ -189,15 +170,41 @@ async def aggregate_moderation(
     else:
         status = "REJECTED"
 
+    # ── Critical single-source overrides ──
+    # Prevents obvious fraud / spam / toxicity from being diluted
+    # into APPROVED when the other sources score low.
+    _source_scores = {
+        "toxicity": toxicity_result.get("score"),
+        "spam":     spam_result.get("score"),
+        "profanity": profanity_result.get("score"),
+        "fraud":    fraud_result.get("score"),
+        "sentiment": sentiment_result.get("score"),
+    }
+    for src_name, src_score in _source_scores.items():
+        if src_score is None:
+            continue
+        if src_score >= CRITICAL_REJECT and status != "REJECTED":
+            logger.info(
+                "Override: %s score %.2f ≥ %.2f → REJECTED",
+                src_name, src_score, CRITICAL_REJECT,
+            )
+            status = "REJECTED"
+            break
+        if src_score >= CRITICAL_FLAG and status == "APPROVED":
+            logger.info(
+                "Override: %s score %.2f ≥ %.2f → FLAGGED",
+                src_name, src_score, CRITICAL_FLAG,
+            )
+            status = "FLAGGED"
+
     return {
-        "text": text or "",
-        "input_type": input_type,
+        "text": text,
+        "input_type": "text",
         "toxicity": toxicity_result,
         "spam": spam_result,
         "profanity": profanity_result,
         "fraud": fraud_result,
         "sentiment": sentiment_result,
-        "image": image_result,
         "final_score": final_score,
         "status": status,
         "is_partial": is_partial,

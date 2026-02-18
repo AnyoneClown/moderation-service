@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request, Depends, Form, UploadFile, File
+from fastapi import FastAPI, Request, Depends, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -44,14 +44,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
-
-# ── Uploads directory ──
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
-
-ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB
-
 
 # ── Lifespan: startup / shutdown logic ──
 @asynccontextmanager
@@ -82,7 +74,6 @@ app = FastAPI(
 
 # ── Static files & Jinja2 templates ──
 app.mount("/static", StaticFiles(directory="static"), name="static")
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 templates = Jinja2Templates(directory="templates")
 
 
@@ -127,98 +118,54 @@ async def dashboard(request: Request):
 async def moderate_text(
     request: Request,
     text: str = Form(""),
-    image: Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Core endpoint — receives user text and/or image, runs the moderation
+    Core endpoint — receives user text, runs the moderation
     pipeline, stores results in PostgreSQL, and redirects to result page.
     """
-    # ── Validate that at least one input is provided ──
+    # ── Validate input ──
     has_text = bool(text and text.strip())
-    has_image = bool(image and image.filename)
 
     t = get_translations(_lang(request))
 
-    if not has_text and not has_image:
+    if not has_text:
         return templates.TemplateResponse(
             "error.html",
-            _ctx(request, message=t["err_no_input"]),
+            _ctx(request, message=t.get("err_no_input", "No input provided")),
             status_code=400,
         )
 
-    logger.info("Received moderation request (text=%d chars, image=%s).",
-                len(text) if text else 0, bool(has_image))
-
-    # ── Read & save uploaded image ──
-    image_bytes: bytes | None = None
-    image_filename: str | None = None
-
-    if has_image:
-        if image.content_type not in ALLOWED_IMAGE_TYPES:
-            return templates.TemplateResponse(
-                "error.html",
-                _ctx(request, message=f"{t['err_unsupported_image']} {image.content_type}"),
-                status_code=400,
-            )
-        image_bytes = await image.read()
-        if len(image_bytes) > MAX_IMAGE_SIZE:
-            return templates.TemplateResponse(
-                "error.html",
-                _ctx(request, message=t["err_image_too_large"]),
-                status_code=400,
-            )
-        ext = image.filename.rsplit(".", 1)[-1].lower() if "." in image.filename else "bin"
-        image_filename = f"{uuid.uuid4().hex}.{ext}"
-        (UPLOAD_DIR / image_filename).write_bytes(image_bytes)
+    logger.info("Received moderation request (text=%d chars).", len(text))
 
     # ── Run moderation checks ──
-    result = await aggregate_moderation(
-        text=text if has_text else None,
-        image_bytes=image_bytes,
-    )
-
-    # ── Extract image sub-scores ──
-    img = result.get("image")
-    image_nsfw_score = None
-    image_scam_score = None
-    image_details = None
-    if img is not None:
-        nsfw = img.get("nsfw", {})
-        caption = img.get("caption", {})
-        image_nsfw_score = nsfw.get("score")
-        image_scam_score = caption.get("scam_score")
-        image_details = img
+    result = await aggregate_moderation(text=text)
 
     # ── Persist to database ──
     record = ModerationRecord(
         text=result["text"],
         input_type=result["input_type"],
-        image_filename=image_filename,
         toxicity_score=result["toxicity"]["score"],
         spam_score=result["spam"]["score"],
-        profanity_score=result["profanity"].get("score", 0.0) if has_text else None,
-        fraud_score=result["fraud"].get("score", 0.0) if has_text else None,
-        sentiment_score=result["sentiment"].get("score", 0.0) if has_text else None,
-        image_nsfw_score=image_nsfw_score,
-        image_scam_score=image_scam_score,
+        profanity_score=result["profanity"].get("score", 0.0),
+        fraud_score=result["fraud"].get("score", 0.0),
+        sentiment_score=result["sentiment"].get("score", 0.0),
         toxicity_details=result["toxicity"].get("details"),
         spam_details=result["spam"].get("details"),
         profanity_details=result["profanity"].get("details"),
         fraud_details=result["fraud"].get("details"),
         sentiment_details=result["sentiment"].get("details"),
-        image_details=image_details,
         final_score=result["final_score"],
         status=result["status"],
         is_partial="true" if result["is_partial"] else "false",
         created_at=datetime.now(timezone.utc),
     )
     db.add(record)
-    await db.flush()
+    await db.commit()
+    await db.refresh(record)
 
-    logger.info("Moderation complete → %s (score=%.4f, partial=%s, type=%s)",
-                result["status"], result["final_score"], result["is_partial"],
-                result["input_type"])
+    logger.info("Moderation complete → %s (score=%.4f, partial=%s)",
+                result["status"], result["final_score"], result["is_partial"])
 
     # ── Redirect to the result page ──
     return RedirectResponse(url=f"/result/{record.id}", status_code=303)
@@ -296,7 +243,6 @@ async def api_records(db: AsyncSession = Depends(get_db)):
             "id": str(r.id),
             "text": (r.text or "")[:120],
             "input_type": r.input_type or "text",
-            "has_image": bool(r.image_filename),
             "status": r.status,
             "final_score": r.final_score,
             "is_partial": r.is_partial,

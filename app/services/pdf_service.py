@@ -220,14 +220,6 @@ def generate_pdf(record, lang: str = "en") -> bytes:
         (t["lbl_sentiment"], record.sentiment_score),
     ]
 
-    # Add image scores if present
-    image_nsfw = getattr(record, "image_nsfw_score", None)
-    image_scam = getattr(record, "image_scam_score", None)
-    if image_nsfw is not None:
-        sources.append((t["lbl_nsfw"], image_nsfw))
-    if image_scam is not None:
-        sources.append((t["lbl_img_scam"], image_scam))
-
     for label, score in sources:
         score_str = f"{score:.4f}" if score is not None else "N/A"
         bar_str = _bar_text(score)
@@ -250,17 +242,6 @@ def generate_pdf(record, lang: str = "en") -> bytes:
     ]))
     elements.append(score_table)
     elements.append(Spacer(1, 6 * mm))
-
-    # ── Image caption (if available) ──
-    image_details = getattr(record, "image_details", None)
-    if image_details and isinstance(image_details, dict):
-        caption_info = image_details.get("caption", {})
-        caption_text = caption_info.get("caption") if isinstance(caption_info, dict) else None
-        if caption_text:
-            elements.append(Paragraph(t["pdf_image_caption"], heading_style))
-            safe_caption = caption_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            elements.append(Paragraph(f"<i>{safe_caption}</i>", body_style))
-            elements.append(Spacer(1, 4 * mm))
 
     # ── Footer / metadata ──
     elements.append(HRFlowable(width="100%", thickness=0.5, color=_LIGHT_GRAY))
