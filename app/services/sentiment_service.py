@@ -80,6 +80,29 @@ def _is_cyrillic_text(text: str) -> bool:
     return cyrillic / len(alpha) >= 0.3
 
 
+def _extract_sentiment_spans(text: str) -> list[dict]:
+    """
+    Extract positions of strongly negative sentiment words for X-Ray display.
+    Only flags Ukrainian negative keywords with weight ≤ -0.6 (severe).
+    """
+    spans: list[dict] = []
+    if not _is_cyrillic_text(text):
+        return spans
+
+    for pat, weight in _UA_NEGATIVE:
+        if weight <= -0.6:  # Only highlight strongly negative words
+            for m in pat.finditer(text):
+                spans.append({
+                    "text": m.group(0),
+                    "start": m.start(),
+                    "end": m.end(),
+                    "source": "sentiment",
+                    "category": "negative_sentiment",
+                })
+
+    return spans
+
+
 def _ua_sentiment_score(text: str) -> float:
     """
     Compute a compound-like score (−1 … +1) for Ukrainian text
@@ -148,6 +171,9 @@ async def check_sentiment(text: str) -> dict:
         if compound >= -0.1:
             risk_score = risk_score * 0.3  # Dampen neutral/positive
 
+        # ── X-Ray: extract triggered sentiment spans ──
+        triggered = _extract_sentiment_spans(text)
+
         return {
             "score": round(min(risk_score, 1.0), 4),
             "compound": round(compound, 4),
@@ -159,6 +185,7 @@ async def check_sentiment(text: str) -> dict:
                 "ua_compound": round(ua_compound, 4) if cyrillic else None,
                 "cyrillic_detected": cyrillic,
             },
+            "triggered_words": triggered,
             "error": None,
         }
 
@@ -168,5 +195,6 @@ async def check_sentiment(text: str) -> dict:
             "score": 0.0,
             "compound": 0.0,
             "details": {"error": str(exc)},
+            "triggered_words": [],
             "error": str(exc),
         }

@@ -158,6 +158,7 @@ async def moderate_text(
         final_score=result["final_score"],
         status=result["status"],
         is_partial="true" if result["is_partial"] else "false",
+        xray_html=result.get("xray_html", ""),
         created_at=datetime.now(timezone.utc),
     )
     db.add(record)

@@ -32,6 +32,7 @@ the remaining sources so that the final score is still on a 0–1 scale.
 """
 
 import asyncio
+import html as html_module
 import logging
 from typing import Optional
 
@@ -61,6 +62,95 @@ THRESHOLD_FLAGGED = 0.55  # scores ≥ this are REJECTED
 # is elevated regardless of the weighted average.
 CRITICAL_REJECT = 0.75   # single source ≥ this → REJECTED
 CRITICAL_FLAG   = 0.45   # single source ≥ this → at least FLAGGED
+
+# ── X-Ray source colour mapping (CSS class suffix) ──
+# Each source maps to a distinct visual style applied via CSS.
+_XRAY_SOURCE_CSS = {
+    "profanity":  "xray-profanity",   # red
+    "fraud":      "xray-fraud",       # orange
+    "sentiment":  "xray-sentiment",   # purple
+}
+
+# ── X-Ray category labels (human-readable, for tooltips) ──
+_CATEGORY_LABELS = {
+    "en_profanity":       "Profanity (EN)",
+    "ua_profanity":       "Profanity (UA)",
+    "ua_toxic":           "Toxic language (UA)",
+    "financial_scam":     "Financial scam",
+    "crypto_scam":        "Crypto scam",
+    "phishing":           "Phishing",
+    "suspicious_url":     "Suspicious URL",
+    "urgency":            "Urgency / pressure",
+    "pii_request":        "PII request",
+    "lottery_scam":       "Lottery / prize scam",
+    "advance_fee":        "Advance-fee fraud",
+    "impersonation":      "Impersonation",
+    "negative_sentiment": "Negative sentiment",
+}
+
+
+def _build_xray_html(text: str, all_spans: list[dict]) -> str:
+    """
+    Produce an HTML string where every triggered word/phrase is wrapped
+    in a ``<mark>`` tag with a source-specific CSS class and a tooltip.
+
+    Overlapping spans are resolved by source priority:
+    profanity > fraud > sentiment.
+    """
+    if not all_spans or not text:
+        return ""
+
+    # Deduplicate by (start, end)
+    seen: set[tuple[int, int]] = set()
+    unique: list[dict] = []
+    for span in all_spans:
+        key = (span["start"], span["end"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(span)
+
+    # Sort by start position; for ties, longer span first
+    unique.sort(key=lambda s: (s["start"], -s["end"]))
+
+    # Merge overlapping spans — keep higher-priority source
+    _PRIORITY = {"profanity": 3, "fraud": 2, "sentiment": 1}
+    merged: list[dict] = []
+    for span in unique:
+        if merged and span["start"] < merged[-1]["end"]:
+            prev = merged[-1]
+            if _PRIORITY.get(span["source"], 0) > _PRIORITY.get(prev["source"], 0):
+                merged[-1] = span
+            # else: keep existing (higher or equal priority)
+        else:
+            merged.append(dict(span))  # copy to avoid mutating originals
+
+    # Build HTML
+    parts: list[str] = []
+    last_end = 0
+
+    for span in merged:
+        start = max(span["start"], last_end)
+        # Append plain text before this span
+        if start > last_end:
+            parts.append(html_module.escape(text[last_end:start]))
+
+        css_class = _XRAY_SOURCE_CSS.get(span["source"], "xray-other")
+        category = span.get("category", span["source"])
+        tooltip = html_module.escape(
+            _CATEGORY_LABELS.get(category, category.replace("_", " ").title())
+        )
+        word = text[start:span["end"]]
+        parts.append(
+            f'<mark class="{css_class}" title="{tooltip}">'
+            f'{html_module.escape(word)}</mark>'
+        )
+        last_end = span["end"]
+
+    # Trailing text
+    if last_end < len(text):
+        parts.append(html_module.escape(text[last_end:]))
+
+    return "".join(parts)
 
 
 async def _run_text_checks(text: str) -> tuple[dict, dict, dict, dict, dict, bool, float]:
@@ -197,6 +287,14 @@ async def aggregate_moderation(text: str) -> dict:
             )
             status = "FLAGGED"
 
+    # ── X-Ray: collect all triggered word spans ──
+    all_triggered: list[dict] = []
+    all_triggered.extend(profanity_result.get("triggered_words", []))
+    all_triggered.extend(fraud_result.get("triggered_words", []))
+    all_triggered.extend(sentiment_result.get("triggered_words", []))
+
+    xray_html = _build_xray_html(text, all_triggered)
+
     return {
         "text": text,
         "input_type": "text",
@@ -208,4 +306,6 @@ async def aggregate_moderation(text: str) -> dict:
         "final_score": final_score,
         "status": status,
         "is_partial": is_partial,
+        "xray_html": xray_html,
+        "xray_data": all_triggered,
     }

@@ -1,1 +1,42 @@
 /* static/style.css — Reserved for custom styles beyond Tailwind CDN */
+
+/* ── X-Ray Explainability highlights ─────────────────────── */
+
+.xray-container mark {
+  padding: 1px 3px;
+  border-radius: 3px;
+  cursor: help;
+  font-weight: 500;
+  transition: filter 0.15s;
+}
+.xray-container mark:hover {
+  filter: brightness(0.9);
+}
+
+/* Profanity — red */
+mark.xray-profanity {
+  background-color: #fee2e2;   /* red-100 */
+  border-bottom: 2px solid #ef4444; /* red-500 */
+  color: #991b1b;              /* red-800 */
+}
+
+/* Fraud / Scam — orange */
+mark.xray-fraud {
+  background-color: #ffedd5;   /* orange-100 */
+  border-bottom: 2px solid #f97316; /* orange-500 */
+  color: #9a3412;              /* orange-800 */
+}
+
+/* Negative Sentiment — purple */
+mark.xray-sentiment {
+  background-color: #f3e8ff;   /* purple-100 */
+  border-bottom: 2px solid #a855f7; /* purple-500 */
+  color: #6b21a8;              /* purple-800 */
+}
+
+/* Fallback */
+mark.xray-other {
+  background-color: #e0f2fe;   /* sky-100 */
+  border-bottom: 2px solid #0ea5e9; /* sky-500 */
+  color: #075985;              /* sky-800 */
+}

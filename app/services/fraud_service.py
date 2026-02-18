@@ -146,6 +146,7 @@ async def check_fraud(text: str) -> dict:
         matched_categories: set[str] = set()
         category_hits: dict[str, list[str]] = {}
         pattern_count = 0
+        triggered_words: list[dict] = []
 
         for pattern, weight, category in _PATTERNS:
             matches = pattern.findall(text)
@@ -160,6 +161,16 @@ async def check_fraud(text: str) -> dict:
                 match_text = matches[0] if isinstance(matches[0], str) else matches[0][0]
                 category_hits[category].append(match_text.strip())
 
+                # ── X-Ray: record every match position ──
+                for m in pattern.finditer(text):
+                    triggered_words.append({
+                        "text": m.group(0).strip(),
+                        "start": m.start(),
+                        "end": m.end(),
+                        "source": "fraud",
+                        "category": category,
+                    })
+
         # Normalise to 0–1, capping at 1.0
         normalised_score = min(raw_score / (_MAX_RAW_SCORE * 0.15), 1.0)
         # Apply a floor: if 3+ categories matched, bump score to at least 0.5
@@ -172,6 +183,7 @@ async def check_fraud(text: str) -> dict:
             "matched_categories": sorted(matched_categories),
             "matched_patterns": pattern_count,
             "details": category_hits,
+            "triggered_words": triggered_words,
             "error": None,
         }
 
@@ -183,5 +195,6 @@ async def check_fraud(text: str) -> dict:
             "matched_categories": [],
             "matched_patterns": 0,
             "details": {"error": str(exc)},
+            "triggered_words": [],
             "error": str(exc),
         }

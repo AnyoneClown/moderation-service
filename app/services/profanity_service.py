@@ -166,6 +166,50 @@ def _check_ukrainian_profanity(text: str) -> tuple[bool, int]:
     return bool(matches), len(matches)
 
 
+def _extract_profanity_spans(text: str) -> list[dict]:
+    """
+    Extract character-level positions of detected profanity and toxic words
+    for X-Ray (Explainable AI) highlighting.
+    """
+    spans: list[dict] = []
+
+    # ── English profanity: check each word individually ──
+    for m in re.finditer(r'\b\w+\b', text):
+        word = m.group()
+        if len(word) >= 2 and profanity.contains_profanity(word):
+            spans.append({
+                "text": word,
+                "start": m.start(),
+                "end": m.end(),
+                "source": "profanity",
+                "category": "en_profanity",
+            })
+
+    # ── Ukrainian profanity ──
+    for m in _UA_PATTERN.finditer(text):
+        if m.group(1):
+            spans.append({
+                "text": m.group(1).strip(),
+                "start": m.start(1),
+                "end": m.end(1),
+                "source": "profanity",
+                "category": "ua_profanity",
+            })
+
+    # ── Ukrainian toxic / hateful patterns ──
+    for pat, weight in _UA_TOXIC_PATTERNS:
+        for m in pat.finditer(text):
+            spans.append({
+                "text": m.group(0),
+                "start": m.start(),
+                "end": m.end(),
+                "source": "profanity",
+                "category": "ua_toxic",
+            })
+
+    return spans
+
+
 async def check_profanity(text: str) -> dict:
     """
     Check *text* for profanity using the local English word list
@@ -179,6 +223,7 @@ async def check_profanity(text: str) -> dict:
             "flagged": bool,        # True if any profanity was detected
             "censored_text": str,   # text with swear words replaced by ****
             "details": dict,        # breakdown of the analysis
+            "triggered_words": list, # X-Ray: word spans that triggered detection
             "error": None           # local — never fails with an API error
         }
     """
@@ -219,6 +264,9 @@ async def check_profanity(text: str) -> dict:
         else:
             score = 0.0
 
+        # ── X-Ray: extract triggered word spans ──
+        triggered = _extract_profanity_spans(text)
+
         return {
             "score": round(score, 4),
             "flagged": contains_profanity or has_toxic_ua,
@@ -234,6 +282,7 @@ async def check_profanity(text: str) -> dict:
                 "severity": round(score, 4),
                 "original_length": len(text),
             },
+            "triggered_words": triggered,
             "error": None,
         }
 
@@ -245,5 +294,6 @@ async def check_profanity(text: str) -> dict:
             "flagged": False,
             "censored_text": text,
             "details": {"error": str(exc)},
+            "triggered_words": [],
             "error": str(exc),
         }

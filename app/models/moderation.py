@@ -46,6 +46,9 @@ class ModerationRecord(Base):
     status = Column(String(20), nullable=False, comment="APPROVED | FLAGGED | REJECTED")
     is_partial = Column(String(5), nullable=False, default="false", comment="'true' if any external API failed")
 
+    # ── X-Ray explainability ──
+    xray_html = Column(Text, nullable=True, comment="HTML with colour-coded triggered-word highlights")
+
     # ── Metadata ──
     created_at = Column(
         DateTime(timezone=True),
