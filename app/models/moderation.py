@@ -25,7 +25,10 @@ class ModerationRecord(Base):
 
     # ── Input ──
     text = Column(Text, nullable=True, comment="Original text submitted for moderation")
-    input_type = Column(String(10), nullable=False, default="text", comment="'text' only")
+    input_type = Column(String(10), nullable=False, default="text", comment="'text', 'audio', etc.")
+
+    # ── Audio-specific fields ──
+    audio_language = Column(String(10), nullable=True, comment="Detected language from audio transcription")
 
     # ── Per-source scores (0.0 – 1.0 risk scale) ──
     toxicity_score = Column(Float, nullable=True, comment="Toxicity score from HuggingFace model")

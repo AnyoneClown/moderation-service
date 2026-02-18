@@ -31,10 +31,11 @@ WORKDIR /app
 
 # Only the minimal runtime libraries (libpq for asyncpg, image libs for Pillow)
 # fonts-dejavu-core provides DejaVuSans.ttf — excellent Cyrillic (Ukrainian) support
+# ffmpeg enables audio format conversion for voice moderation
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libpq5 \
     libjpeg62-turbo libpng16-16 libfreetype6 \
-    fonts-dejavu-core && \
+    fonts-dejavu-core ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtual environment from the builder stage

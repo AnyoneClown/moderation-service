@@ -38,7 +38,7 @@
             {% if r.text %}{{ r.text[:80] }}{% if r.text|length > 80 %}…{% endif %}{% else %}<span class="text-gray-300 italic">{{ t.image_only_label }}</span>{% endif %}
           </td>
           <td class="px-4 py-3 text-center text-xs">
-            {% if r.input_type == 'both' %}📝🖼️{% elif r.input_type == 'image' %}🖼️{% else %}📝{% endif %}
+            {% if r.input_type == 'both' %}📝🖼️{% elif r.input_type == 'image' %}🖼️{% elif r.input_type == 'audio' %}🎤{% else %}📝{% endif %}
           </td>
           <td class="px-4 py-3 text-center font-mono">{{ "%.2f"|format(r.final_score) }}</td>
           <td class="px-4 py-3 text-center">

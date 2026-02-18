@@ -31,9 +31,18 @@ Base = declarative_base()
 
 
 async def init_db() -> None:
-    """Create all tables. Called once during application startup."""
+    """Create all tables and apply lightweight migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        # ── Lightweight column migrations (no Alembic needed) ──
+        # Add audio_language column if it doesn't exist yet
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE moderation_records_v2 "
+                "ADD COLUMN IF NOT EXISTS audio_language VARCHAR(10)"
+            )
+        )
 
 
 async def get_db() -> AsyncSession:  # type: ignore[misc]

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request, Depends, Form
+from fastapi import FastAPI, Request, Depends, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -33,6 +33,7 @@ from app.config import get_settings
 from app.database import init_db, get_db
 from app.models.moderation import ModerationRecord
 from app.services.aggregator import aggregate_moderation
+from app.services.audio_service import transcribe_audio, is_allowed_audio_type, MAX_AUDIO_SIZE
 from app.services.pdf_service import generate_pdf
 from app.i18n import get_translations, DEFAULT_LANGUAGE
 
@@ -166,6 +167,105 @@ async def moderate_text(
     await db.refresh(record)
 
     logger.info("Moderation complete → %s (score=%.4f, partial=%s)",
+                result["status"], result["final_score"], result["is_partial"])
+
+    # ── Redirect to the result page ──
+    return RedirectResponse(url=f"/result/{record.id}", status_code=303)
+
+
+@app.post("/moderate-audio")
+async def moderate_audio(
+    request: Request,
+    audio: UploadFile = File(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Audio moderation endpoint — accepts an audio file (upload or mic recording),
+    transcribes it via HuggingFace Whisper, then feeds the text into the
+    standard moderation pipeline.
+    """
+    t = get_translations(_lang(request))
+
+    # ── Validate audio input ──
+    if audio is None or audio.filename == "" and audio.size == 0:
+        return templates.TemplateResponse(
+            "error.html",
+            _ctx(request, message=t.get("err_no_audio", "Please provide an audio file.")),
+            status_code=400,
+        )
+
+    # Check MIME type
+    content_type = audio.content_type or "audio/wav"
+    if not is_allowed_audio_type(content_type):
+        return templates.TemplateResponse(
+            "error.html",
+            _ctx(request, message=f"{t.get('err_unsupported_audio', 'Unsupported audio format:')} {content_type}"),
+            status_code=400,
+        )
+
+    # Read audio bytes
+    audio_bytes = await audio.read()
+
+    if len(audio_bytes) == 0:
+        return templates.TemplateResponse(
+            "error.html",
+            _ctx(request, message=t.get("err_no_audio", "Please provide an audio file.")),
+            status_code=400,
+        )
+
+    if len(audio_bytes) > MAX_AUDIO_SIZE:
+        return templates.TemplateResponse(
+            "error.html",
+            _ctx(request, message=t.get("err_audio_too_large", "Audio file exceeds 25 MB limit.")),
+            status_code=400,
+        )
+
+    logger.info("Received audio moderation request (%d bytes, type=%s).", len(audio_bytes), content_type)
+
+    # ── Step 1: Transcribe audio to text ──
+    transcription = await transcribe_audio(audio_bytes, content_type)
+
+    if transcription["error"] and not transcription["text"]:
+        return templates.TemplateResponse(
+            "error.html",
+            _ctx(request, message=f"{t.get('err_transcription_failed', 'Audio transcription failed:')} {transcription['error']}"),
+            status_code=500,
+        )
+
+    transcribed_text = transcription["text"]
+    detected_language = transcription.get("language")
+
+    logger.info("Transcription complete: %d chars, lang=%s", len(transcribed_text), detected_language or "?")
+
+    # ── Step 2: Run the text moderation pipeline ──
+    result = await aggregate_moderation(text=transcribed_text)
+
+    # ── Step 3: Persist to database ──
+    record = ModerationRecord(
+        text=result["text"],
+        input_type="audio",
+        audio_language=detected_language,
+        toxicity_score=result["toxicity"]["score"],
+        spam_score=result["spam"]["score"],
+        profanity_score=result["profanity"].get("score", 0.0),
+        fraud_score=result["fraud"].get("score", 0.0),
+        sentiment_score=result["sentiment"].get("score", 0.0),
+        toxicity_details=result["toxicity"].get("details"),
+        spam_details=result["spam"].get("details"),
+        profanity_details=result["profanity"].get("details"),
+        fraud_details=result["fraud"].get("details"),
+        sentiment_details=result["sentiment"].get("details"),
+        final_score=result["final_score"],
+        status=result["status"],
+        is_partial="true" if result["is_partial"] else "false",
+        xray_html=result.get("xray_html", ""),
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+
+    logger.info("Audio moderation complete → %s (score=%.4f, partial=%s)",
                 result["status"], result["final_score"], result["is_partial"])
 
     # ── Redirect to the result page ──
