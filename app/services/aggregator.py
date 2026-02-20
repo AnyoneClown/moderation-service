@@ -21,14 +21,19 @@ Decision thresholds:
     score ≥ 0.55  → REJECTED
 
 Critical-score overrides (applied *after* the weighted average):
-    Any single source score ≥ 0.75  → at least REJECTED
-    Any single source score ≥ 0.45  → at least FLAGGED
+    Any single source score ≥ 0.85  → at least REJECTED
+    Any single source score ≥ 0.65  → at least FLAGGED
 
 This prevents obvious fraud/spam/toxicity from being diluted
 into an APPROVED verdict when the other sources score low.
 
 If an external API is unavailable the weight is redistributed among
 the remaining sources so that the final score is still on a 0–1 scale.
+
+X-Ray highlighting is powered by an instruction-following LLM
+(HuggingFace Inference API) that identifies which specific words or
+phrases in the text are problematic — replacing the earlier regex-based
+approach with context-aware, multilingual detection.
 """
 
 import asyncio
@@ -41,6 +46,7 @@ from app.services.hf_toxicity_service import check_hf_toxicity
 from app.services.profanity_service import check_profanity
 from app.services.fraud_service import check_fraud
 from app.services.sentiment_service import check_sentiment
+from app.services.hf_xray_service import check_xray
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +66,8 @@ THRESHOLD_FLAGGED = 0.55  # scores ≥ this are REJECTED
 # ── Critical single-source overrides ──
 # If ANY individual source score meets these thresholds the verdict
 # is elevated regardless of the weighted average.
-CRITICAL_REJECT = 0.75   # single source ≥ this → REJECTED
-CRITICAL_FLAG   = 0.45   # single source ≥ this → at least FLAGGED
+CRITICAL_REJECT = 0.85   # single source ≥ this → REJECTED
+CRITICAL_FLAG   = 0.65   # single source ≥ this → at least FLAGGED
 
 # ── X-Ray source colour mapping (CSS class suffix) ──
 # Each source maps to a distinct visual style applied via CSS.
@@ -259,10 +265,16 @@ async def aggregate_moderation(text: str) -> dict:
             "is_partial": False,
         }
 
+    # Run text scoring and LLM X-Ray analysis concurrently
+    text_results, xray_result = await asyncio.gather(
+        _run_text_checks(text),
+        check_xray(text),
+    )
+
     (
         toxicity_result, spam_result, profanity_result,
         fraud_result, sentiment_result, is_partial, final_score,
-    ) = await _run_text_checks(text)
+    ) = text_results
 
     # ── Map score to decision status (weighted average) ──
     if final_score < THRESHOLD_APPROVED:
@@ -299,11 +311,8 @@ async def aggregate_moderation(text: str) -> dict:
             )
             status = "FLAGGED"
 
-    # ── X-Ray: collect all triggered word spans ──
-    all_triggered: list[dict] = []
-    all_triggered.extend(profanity_result.get("triggered_words", []))
-    all_triggered.extend(fraud_result.get("triggered_words", []))
-    all_triggered.extend(sentiment_result.get("triggered_words", []))
+    # ── X-Ray: LLM-powered word highlighting ──
+    all_triggered = xray_result.get("triggered_words", [])
 
     xray_html = _build_xray_html(text, all_triggered)
 

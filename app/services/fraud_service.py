@@ -121,10 +121,12 @@ async def check_fraud(text: str) -> dict:
         category_scores: dict[str, float] = {}
         matched_categories: list[str] = []
         max_fraud_score = 0.0
+        legitimate_score = 0.0
 
         for label, score in zip(labels, scores):
             if label == _LEGITIMATE_LABEL:
                 category_scores["legitimate"] = round(score, 4)
+                legitimate_score = score
                 continue
 
             key = _LABEL_TO_KEY.get(label, label)
@@ -133,11 +135,17 @@ async def check_fraud(text: str) -> dict:
             if score > max_fraud_score:
                 max_fraud_score = score
 
-            if score >= _CATEGORY_THRESHOLD:
+            # A category is only "matched" when it exceeds both the
+            # absolute threshold AND the legitimate score — this stops
+            # benign messages from accumulating false-positive categories.
+            if score >= _CATEGORY_THRESHOLD and score > legitimate_score:
                 matched_categories.append(key)
 
-        # Final fraud score = maximum fraud-category probability
-        fraud_score = min(max_fraud_score, 1.0)
+        # Dampen the raw fraud score by how legitimate the model
+        # considers the message.  This prevents innocuous text from
+        # being flagged just because zero-shot NLI distributes some
+        # probability mass across fraud labels.
+        fraud_score = min(max_fraud_score * (1.0 - legitimate_score), 1.0)
 
         return {
             "score": round(fraud_score, 4),
