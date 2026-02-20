@@ -1,200 +1,171 @@
 """
-app/services/fraud_service.py — Local fraud & phishing detection.
+app/services/fraud_service.py — AI-powered fraud & phishing detection.
 
-A pattern-based detector that identifies common fraud/scam/phishing
-indicators in text.  Runs entirely locally with zero API dependencies.
+Uses a multilingual zero-shot classification model (XLM-RoBERTa) via
+the HuggingFace Inference API to detect fraud/scam/phishing indicators
+in text.
 
-Detection categories:
-  1. Financial scams   — "wire transfer", "guaranteed profit", crypto scams
-  2. Phishing          — fake URLs, credential harvesting, "verify your account"
-  3. Urgency/pressure  — "act now", "limited time", "expires today"
-  4. Personal info     — requests for SSN, credit card, bank account numbers
+Detection categories (evaluated by the model):
+  1. Financial scams   — investment fraud, guaranteed profits, crypto scams
+  2. Phishing          — credential harvesting, account verification requests
+  3. Urgency/pressure  — "act now", "limited time", deadline pressure
+  4. Personal info     — requests for SSN, credit card, bank details
   5. Lottery/prize     — "you have won", "claim your prize"
-  6. Advance fee       — "processing fee", "send money to receive"
+  6. Advance fee       — processing fees, send money upfront
+  7. Impersonation     — fake authority / government officials
 
-Each matched pattern contributes to a cumulative score.  The final
-score is normalised to the 0.0–1.0 range.
+The model scores each category independently (multi-label zero-shot
+classification).  The final fraud risk score is derived from the
+highest fraud-category probability.  Supports 100+ languages including
+English and Ukrainian via the XLM-RoBERTa backbone.
 """
 
-import re
+import httpx
 import logging
+from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
-# ── Pattern definitions ──────────────────────────────────────
-# Each tuple: (compiled regex, weight, category label)
-# Weights reflect severity; higher = more suspicious.
+# ── Model endpoint ───────────────────────────────────────────
+# Multilingual zero-shot classification model (XLM-RoBERTa fine-tuned
+# on XNLI).  Supports 100+ languages including English and Ukrainian.
+HF_ZERO_SHOT_URL = (
+    "https://router.huggingface.co/hf-inference/models/"
+    "joeddav/xlm-roberta-large-xnli"
+)
 
-_PATTERNS: list[tuple[re.Pattern, float, str]] = [
-    # ── Financial scams ──
-    (re.compile(r'\b(wire\s*transfer|money\s*transfer|western\s*union|moneygram)\b', re.I), 0.30, "financial_scam"),
-    (re.compile(r'\b(guaranteed\s*(profit|return|income)|double\s*your\s*money)\b', re.I), 0.35, "financial_scam"),
-    (re.compile(r'\b(bitcoin|crypto|btc|ethereum|eth)\s*(invest|send|deposit|transfer)\b', re.I), 0.25, "crypto_scam"),
-    (re.compile(r'\b(invest(ment)?\s*opportunity|passive\s*income|financial\s*freedom)\b', re.I), 0.20, "financial_scam"),
-    (re.compile(r'\b(make\s*money\s*(fast|quick|easy|online)|get\s*rich\s*quick)\b', re.I), 0.25, "financial_scam"),
-    (re.compile(r'\b(no\s*risk|risk[\s-]*free|100\s*%\s*(guaranteed|safe|secure))\b', re.I), 0.20, "financial_scam"),
-
-    # ── Phishing / credential harvesting ──
-    (re.compile(r'\b(verify\s*your\s*(account|identity|email|password|information))\b', re.I), 0.30, "phishing"),
-    (re.compile(r'\b(click\s*(here|below|this\s*link)|follow\s*this\s*link)\b', re.I), 0.15, "phishing"),
-    (re.compile(r'\b(update\s*your\s*(payment|billing|account)\s*(info|information|details))\b', re.I), 0.30, "phishing"),
-    (re.compile(r'\b(log\s*in\s*(immediately|now|urgent)|confirm\s*your\s*(identity|account))\b', re.I), 0.25, "phishing"),
-    (re.compile(r'\b(suspended|deactivat(e|ed)|unauthorized\s*access|unusual\s*activity)\b', re.I), 0.20, "phishing"),
-    (re.compile(r'https?://[a-z0-9\-]+\.(tk|ml|ga|cf|gq|xyz|top|buzz|club)\b', re.I), 0.25, "suspicious_url"),
-
-    # ── Urgency / pressure tactics ──
-    (re.compile(r'\b(act\s*now|limited\s*time|expires?\s*(today|soon|immediately))\b', re.I), 0.15, "urgency"),
-    (re.compile(r'\b(urgent|immediately|right\s*away|don\'?t\s*(wait|delay|miss))\b', re.I), 0.10, "urgency"),
-    (re.compile(r'\b(last\s*chance|final\s*(warning|notice)|only\s*\d+\s*(left|remaining))\b', re.I), 0.15, "urgency"),
-    (re.compile(r'\b(within\s*\d+\s*(hour|minute|day)s?|before\s*it\'?s\s*too\s*late)\b', re.I), 0.10, "urgency"),
-
-    # ── Personal information requests ──
-    (re.compile(r'\b(social\s*security\s*(number)?|ssn)\b', re.I), 0.35, "pii_request"),
-    (re.compile(r'\b(credit\s*card\s*(number|info|details)|card\s*number|cvv|cvc)\b', re.I), 0.35, "pii_request"),
-    (re.compile(r'\b(bank\s*account\s*(number|details|info)|routing\s*number|iban|swift)\b', re.I), 0.30, "pii_request"),
-    (re.compile(r'\b(passport\s*(number|details)|driver\'?s?\s*licen[sc]e\s*(number)?)\b', re.I), 0.25, "pii_request"),
-    (re.compile(r'\b(send\s*(me|us)\s*your\s*(password|pin|credentials))\b', re.I), 0.35, "pii_request"),
-
-    # ── Lottery / prize scams ──
-    (re.compile(r'\b(you\s*(have\s*)?(won|been\s*selected)|congratulations?\s*!?\s*(you|winner))\b', re.I), 0.30, "lottery_scam"),
-    (re.compile(r'\b(claim\s*(your|the)\s*(prize|reward|winnings|gift))\b', re.I), 0.30, "lottery_scam"),
-    (re.compile(r'\b(lottery|sweepstakes|raffle|jackpot|grand\s*prize)\b', re.I), 0.20, "lottery_scam"),
-    (re.compile(r'\b(free\s*(gift|iphone|macbook|laptop|money|vacation))\b', re.I), 0.20, "lottery_scam"),
-
-    # ── Advance-fee / Nigerian-prince style ──
-    (re.compile(r'\b(processing\s*fee|handling\s*(fee|charge)|small\s*fee)\b', re.I), 0.25, "advance_fee"),
-    (re.compile(r'\b(send\s*(money|funds|payment)\s*(to\s*receive|first|upfront))\b', re.I), 0.35, "advance_fee"),
-    (re.compile(r'\b(inheritance|beneficiary|next\s*of\s*kin|unclaimed\s*(funds|money))\b', re.I), 0.30, "advance_fee"),
-    (re.compile(r'\b(nigerian?\s*prince|foreign\s*(dignitary|official|minister))\b', re.I), 0.35, "advance_fee"),
-    (re.compile(r'\b(million\s*dollars?|millions?\s*of\s*(dollars|usd|euros?))\b', re.I), 0.20, "advance_fee"),
-
-    # ── Impersonation / authority fraud ──
-    (re.compile(r'\b(irs|fbi|interpol|police|government)\s*(agent|official|department)\b', re.I), 0.20, "impersonation"),
-    (re.compile(r'\b(legal\s*action|arrest\s*warrant|court\s*order|lawsuit)\b', re.I), 0.15, "impersonation"),
-
-    # ═══════════════════════════════════════════════════════════
-    # Ukrainian-language fraud / scam / phishing patterns
-    # ═══════════════════════════════════════════════════════════
-
-    # ── Financial scams (UA) ──
-    (re.compile(r'(грошовий\s*переказ|переказ\s*коштів|вестерн\s*юніон)', re.I), 0.30, "financial_scam"),
-    (re.compile(r'(гарантован(ий|а|е|ого)\s*(прибуток|дох[іо]д|повернення)|подвоїти\s*(ваші\s*)?(гроші|кошти))', re.I), 0.35, "financial_scam"),
-    (re.compile(r'(біткоїн|крипт[оа]|btc|ефіріум)\s*(інвест|надісл|відправ|переказ|депозит)', re.I), 0.25, "crypto_scam"),
-    (re.compile(r'(інвестиційн(а|ий)\s*можливість|пасивний\s*дох[іо]д|фінансов[аі]\s*свобод[аі])', re.I), 0.20, "financial_scam"),
-    (re.compile(r'(заробити\s*(швидко|легко|онлайн|багато)|швидк(ий|і)\s*заробіток)', re.I), 0.25, "financial_scam"),
-    (re.compile(r'(без\s*ризик[уі]|100\s*%\s*(гарантовано|безпечно|надійно))', re.I), 0.20, "financial_scam"),
-
-    # ── Phishing / credential harvesting (UA) ──
-    (re.compile(r'(підтверд(іть|и)\s*(ваш|свій)\s*(акаунт|обліков|пароль|електронн|особист))', re.I), 0.30, "phishing"),
-    (re.compile(r'(натисніть\s*(тут|нижче|на\s*посилання)|перейдіть\s*(за\s*посиланням|сюди))', re.I), 0.15, "phishing"),
-    (re.compile(r'(оновіть\s*(ваш[іу]?|свої?)?\s*(платіж|рахунок|білінг|дан[іі]))', re.I), 0.30, "phishing"),
-    (re.compile(r'(увійдіть\s*(негайно|зараз|терміново)|підтвердіть\s*(ваш[уі]?\s*)?(особу|акаунт))', re.I), 0.25, "phishing"),
-    (re.compile(r'(заблоковано|деактивовано|призупинено|несанкціонований\s*доступ|підозріл[аі]\s*активність)', re.I), 0.20, "phishing"),
-
-    # ── Urgency / pressure tactics (UA) ──
-    (re.compile(r'(дійте\s*зараз|обмежений\s*час|терм[іи]н\s*(сплив|закінч))', re.I), 0.15, "urgency"),
-    (re.compile(r'(терміново|негайно|не\s*(зволікайте|гайте|пропустіть|чекайте))', re.I), 0.10, "urgency"),
-    (re.compile(r'(останній\s*шанс|фінальне?\s*(попередження|сповіщення)|залишилось?\s*\d+)', re.I), 0.15, "urgency"),
-    (re.compile(r'(протягом\s*\d+\s*(годин|хвилин|днів)|поки\s*не\s*пізно)', re.I), 0.10, "urgency"),
-
-    # ── Personal information requests (UA) ──
-    (re.compile(r'(ідентифікаційний\s*(код|номер)|інн|іпн)', re.I), 0.35, "pii_request"),
-    (re.compile(r'(номер\s*(картки|кредитк)|дані\s*картки|cvv|cvc|кредитна\s*картка)', re.I), 0.35, "pii_request"),
-    (re.compile(r'(банківськ(ий|і)\s*(рахунок|реквізити|дані)|номер\s*рахунк[уа]|iban|swift)', re.I), 0.30, "pii_request"),
-    (re.compile(r'(номер\s*паспорт[аіу]|дані\s*паспорт[аіу]|посвідчення\s*водія)', re.I), 0.25, "pii_request"),
-    (re.compile(r'(надішліть\s*(мені|нам)\s*(ваш|свій)\s*(пароль|пін|код))', re.I), 0.35, "pii_request"),
-
-    # ── Lottery / prize scams (UA) ──
-    (re.compile(r'(ви\s*(виграли|обран[іі]|отримали\s*приз)|вітаємо\s*!?\s*(ви|переможець))', re.I), 0.30, "lottery_scam"),
-    (re.compile(r'(отримайте\s*(ваш|свій)\s*(приз|нагород[уа]|виграш|подарунок))', re.I), 0.30, "lottery_scam"),
-    (re.compile(r'(лотере[яї]|розіграш|джекпот|головний\s*приз)', re.I), 0.20, "lottery_scam"),
-    (re.compile(r'(безкоштовн(ий|а|е)\s*(подарунок|айфон|ноутбук|гроші|відпочинок))', re.I), 0.20, "lottery_scam"),
-
-    # ── Advance-fee (UA) ──
-    (re.compile(r'(комісі[яї]\s*за\s*обробку|невелик[аий]\s*(комісі[яї]|оплат[аі]|внесок))', re.I), 0.25, "advance_fee"),
-    (re.compile(r'(надішліть\s*(гроші|кошти|оплату)\s*(щоб\s*отримати|спочатку|наперед))', re.I), 0.35, "advance_fee"),
-    (re.compile(r'(спадщин[аі]|спадкоємець|бенефіціар|невитребуван[іі]\s*(кошти|гроші))', re.I), 0.30, "advance_fee"),
-    (re.compile(r'(мільйон[иів]?\s*(доларів|гривень|євро)|мільйони?\s*грн)', re.I), 0.20, "advance_fee"),
-
-    # ── Impersonation / authority fraud (UA) ──
-    (re.compile(r'(поліці[яї]|сбу|прокуратур[аи]|податков[аі]|держав[а-я]+\s*(служб|орган))', re.I), 0.20, "impersonation"),
-    (re.compile(r'(судов(ий|а)\s*(позов|наказ)|арешт|кримінальн[аеі]\s*(справ[аі]|відповідальність))', re.I), 0.15, "impersonation"),
+# ── Candidate labels for zero-shot fraud detection ───────────
+# Each label becomes a hypothesis the NLI model evaluates against
+# the input text.  Phrased as natural-language descriptions so the
+# model can leverage its understanding of entailment.
+_FRAUD_LABELS = [
+    "financial scam or investment fraud",
+    "phishing or credential theft",
+    "urgency or pressure tactics",
+    "request for personal or financial information",
+    "lottery or prize scam",
+    "advance fee fraud",
+    "impersonation of authority or government",
 ]
 
-# Maximum possible raw score (sum of all weights)
-_MAX_RAW_SCORE = sum(weight for _, weight, _ in _PATTERNS)
+_LEGITIMATE_LABEL = "legitimate ordinary message"
+
+_ALL_LABELS = _FRAUD_LABELS + [_LEGITIMATE_LABEL]
+
+# Short keys used in the details dict and by the aggregator
+_LABEL_TO_KEY: dict[str, str] = {
+    "financial scam or investment fraud": "financial_scam",
+    "phishing or credential theft": "phishing",
+    "urgency or pressure tactics": "urgency",
+    "request for personal or financial information": "pii_request",
+    "lottery or prize scam": "lottery_scam",
+    "advance fee fraud": "advance_fee",
+    "impersonation of authority or government": "impersonation",
+}
+
+# Minimum confidence for a category to be considered "matched"
+_CATEGORY_THRESHOLD = 0.30
 
 
 async def check_fraud(text: str) -> dict:
     """
-    Scan *text* for fraud/phishing/scam patterns.
+    Classify *text* for fraud/scam/phishing via HuggingFace zero-shot
+    classification.
 
     Returns
     -------
     dict
         {
-            "score": float,          # normalised risk score (0.0–1.0)
-            "flagged": bool,         # True if any pattern matched
-            "matched_categories": list[str],  # unique categories triggered
-            "matched_patterns": int, # number of individual patterns matched
-            "details": dict,         # per-category breakdown
-            "error": None
+            "score": float | None,       # fraud risk score (0.0–1.0)
+            "flagged": bool,             # True if any fraud category matched
+            "matched_categories": list,  # categories above threshold
+            "details": dict | None,      # per-category score breakdown
+            "triggered_words": list,     # always [] (AI has no word spans)
+            "error": str | None
         }
     """
+    if not settings.HF_API_TOKEN or settings.HF_API_TOKEN.startswith("hf_REPLACE"):
+        logger.warning("HF API token not configured — skipping fraud check.")
+        return {
+            "score": None,
+            "flagged": False,
+            "matched_categories": [],
+            "details": None,
+            "triggered_words": [],
+            "error": "API token not configured",
+        }
+
+    headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
+    payload = {
+        "inputs": text,
+        "parameters": {
+            "candidate_labels": _ALL_LABELS,
+            "multi_label": True,
+        },
+    }
+
     try:
-        raw_score = 0.0
-        matched_categories: set[str] = set()
-        category_hits: dict[str, list[str]] = {}
-        pattern_count = 0
-        triggered_words: list[dict] = []
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            response = await client.post(
+                HF_ZERO_SHOT_URL, json=payload, headers=headers,
+            )
+            response.raise_for_status()
 
-        for pattern, weight, category in _PATTERNS:
-            matches = pattern.findall(text)
-            if matches:
-                raw_score += weight
-                matched_categories.add(category)
-                pattern_count += 1
+        data = response.json()
 
-                if category not in category_hits:
-                    category_hits[category] = []
-                # Store the first match as evidence
-                match_text = matches[0] if isinstance(matches[0], str) else matches[0][0]
-                category_hits[category].append(match_text.strip())
+        labels: list[str] = data.get("labels", [])
+        scores: list[float] = data.get("scores", [])
 
-                # ── X-Ray: record every match position ──
-                for m in pattern.finditer(text):
-                    triggered_words.append({
-                        "text": m.group(0).strip(),
-                        "start": m.start(),
-                        "end": m.end(),
-                        "source": "fraud",
-                        "category": category,
-                    })
+        # Build per-category score breakdown (using short keys)
+        category_scores: dict[str, float] = {}
+        matched_categories: list[str] = []
+        max_fraud_score = 0.0
 
-        # Normalise to 0–1, capping at 1.0
-        normalised_score = min(raw_score / (_MAX_RAW_SCORE * 0.15), 1.0)
-        # Apply a floor: if 3+ categories matched, bump score to at least 0.5
-        if len(matched_categories) >= 3:
-            normalised_score = max(normalised_score, 0.5)
+        for label, score in zip(labels, scores):
+            if label == _LEGITIMATE_LABEL:
+                category_scores["legitimate"] = round(score, 4)
+                continue
+
+            key = _LABEL_TO_KEY.get(label, label)
+            category_scores[key] = round(score, 4)
+
+            if score > max_fraud_score:
+                max_fraud_score = score
+
+            if score >= _CATEGORY_THRESHOLD:
+                matched_categories.append(key)
+
+        # Final fraud score = maximum fraud-category probability
+        fraud_score = min(max_fraud_score, 1.0)
 
         return {
-            "score": round(normalised_score, 4),
-            "flagged": pattern_count > 0,
+            "score": round(fraud_score, 4),
+            "flagged": len(matched_categories) > 0,
             "matched_categories": sorted(matched_categories),
-            "matched_patterns": pattern_count,
-            "details": category_hits,
-            "triggered_words": triggered_words,
+            "details": category_scores,
+            "triggered_words": [],
             "error": None,
         }
 
-    except Exception as exc:
-        logger.error("Fraud detection failed: %s", exc)
+    except httpx.HTTPStatusError as exc:
+        logger.error("HuggingFace Fraud API HTTP error: %s", exc.response.text)
         return {
-            "score": 0.0,
+            "score": None,
             "flagged": False,
             "matched_categories": [],
-            "matched_patterns": 0,
-            "details": {"error": str(exc)},
+            "details": None,
+            "triggered_words": [],
+            "error": f"HTTP {exc.response.status_code}",
+        }
+
+    except Exception as exc:
+        logger.error("HuggingFace Fraud API call failed: %s", exc)
+        return {
+            "score": None,
+            "flagged": False,
+            "matched_categories": [],
+            "details": None,
             "triggered_words": [],
             "error": str(exc),
         }

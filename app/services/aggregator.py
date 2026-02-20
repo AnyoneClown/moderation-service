@@ -96,9 +96,15 @@ def _build_xray_html(text: str, all_spans: list[dict]) -> str:
 
     Overlapping spans are resolved by source priority:
     profanity > fraud > sentiment.
+
+    Always returns the full HTML-escaped text so that the X-Ray section
+    is visible for every input type (typed text, audio transcription, etc.).
     """
-    if not all_spans or not text:
+    if not text:
         return ""
+
+    if not all_spans:
+        return html_module.escape(text)
 
     # Deduplicate by (start, end)
     seen: set[tuple[int, int]] = set()
@@ -189,7 +195,13 @@ async def _run_text_checks(text: str) -> tuple[dict, dict, dict, dict, dict, boo
         logger.warning("Spam result unavailable — partial scoring.")
 
     sources["profanity"] = profanity_result["score"]
-    sources["fraud"] = fraud_result["score"]
+
+    if fraud_result["score"] is not None:
+        sources["fraud"] = fraud_result["score"]
+    else:
+        is_partial = True
+        logger.warning("Fraud result unavailable — partial scoring.")
+
     sources["sentiment"] = sentiment_result["score"]
 
     # Calculate weighted score based on available sources
