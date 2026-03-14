@@ -20,7 +20,7 @@ settings = get_settings()
 # XLM-RoBERTa based model that supports 100+ languages incl. Ukrainian
 HF_TOXICITY_URL = (
     "https://router.huggingface.co/hf-inference/models/"
-    "textdetox/xlmr-large-toxicity-classifier"
+    "unitary/multilingual-toxic-xlm-roberta"
 )
 
 
