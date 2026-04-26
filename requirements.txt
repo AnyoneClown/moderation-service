@@ -9,15 +9,15 @@ jinja2==3.1.5
 # Async HTTP client (for calling HuggingFace APIs)
 httpx==0.28.1
 
+# OpenAI-compatible SDK (NVIDIA NIM)
+openai==1.59.7
+
 # Database (async PostgreSQL)
 sqlalchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 
 # Configuration
 pydantic-settings==2.7.1
-
-# Local profanity filter
-better-profanity==0.7.0
 
 # Sentiment analysis (VADER)
 nltk==3.9.1

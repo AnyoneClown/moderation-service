@@ -1,7 +1,7 @@
 """
 app/services/hf_xray_service.py — LLM-powered X-Ray word highlighting.
 
-Uses a HuggingFace-hosted instruction-following LLM to identify which
+Uses NVIDIA NIM to run an instruction-following LLM that identifies which
 specific words and phrases in the input text are problematic (profane,
 toxic, fraudulent, or carrying strongly negative sentiment).
 
@@ -14,19 +14,14 @@ by ``aggregator._build_xray_html``, so the rest of the pipeline is
 unchanged.
 """
 
-import httpx
 import json
 import re
 import logging
-from app.config import get_settings
+from openai import APIError, APIStatusError
+
+from app.services.nvidia_nim_service import is_nim_configured, nim_chat_completion
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
-
-# ── LLM model endpoint ──────────────────────────────────────
-# Instruction-following model via HuggingFace router chat-completions API.
-HF_XRAY_MODEL = "Qwen/Qwen2.5-72B-Instruct"
-HF_XRAY_URL = "https://router.huggingface.co/v1/chat/completions"
 
 # ── Category → visual source (for CSS class mapping) ────────
 _CATEGORY_TO_SOURCE: dict[str, str] = {
@@ -173,48 +168,36 @@ async def check_xray(text: str) -> dict:
             "error": str | None
         }
     """
-    if not settings.HF_API_TOKEN or settings.HF_API_TOKEN.startswith("hf_REPLACE"):
-        logger.warning("HF API token not configured — skipping LLM X-Ray.")
+    if not is_nim_configured():
+        logger.warning("NVIDIA API key not configured — skipping LLM X-Ray.")
         return {"triggered_words": [], "error": "API token not configured"}
 
-    headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
-    payload = {
-        "model": HF_XRAY_MODEL,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
-        "max_tokens": 1024,
-        "temperature": 0.1,  # low for deterministic, consistent output
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                HF_XRAY_URL, json=payload, headers=headers,
-            )
-            response.raise_for_status()
-
-        data = response.json()
-
-        choices = data.get("choices", [])
-        if not choices:
-            logger.warning("LLM X-Ray: empty choices in response.")
-            return {"triggered_words": [], "error": "Empty model response"}
-
-        raw_content = choices[0].get("message", {}).get("content", "")
+        raw_content = await nim_chat_completion(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=1024,
+            temperature=0.1,
+        )
         spans = _parse_llm_response(raw_content, text)
 
-        logger.info("LLM X-Ray identified %d span(s).", len(spans))
+        logger.info(raw_content)
+        logger.info("NVIDIA NIM X-Ray identified %d span(s).", len(spans))
         return {"triggered_words": spans, "error": None}
 
-    except httpx.HTTPStatusError as exc:
-        logger.error("LLM X-Ray HTTP error: %s", exc.response.text[:300])
+    except APIStatusError as exc:
+        logger.error("NVIDIA NIM X-Ray HTTP error: %s", str(exc)[:300])
         return {
             "triggered_words": [],
-            "error": f"HTTP {exc.response.status_code}",
+            "error": f"HTTP {exc.status_code}",
         }
 
+    except APIError as exc:
+        logger.error("NVIDIA NIM X-Ray API error: %s", exc)
+        return {"triggered_words": [], "error": str(exc)}
+
     except Exception as exc:
-        logger.error("LLM X-Ray call failed: %s", exc)
+        logger.error("NVIDIA NIM X-Ray call failed: %s", exc)
         return {"triggered_words": [], "error": str(exc)}

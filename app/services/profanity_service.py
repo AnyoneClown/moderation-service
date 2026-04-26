@@ -1,296 +1,223 @@
 """
-app/services/profanity_service.py — Enhanced local profanity filter.
+app/services/profanity_service.py — NVIDIA NIM profanity moderation.
 
-Uses the ``better-profanity`` library for instant, offline detection
-of swear words and prohibited language.  This service is always
-available regardless of external API status — it acts as the
-reliability backbone of the system.
-
-Enhancements over the basic binary check:
-  - Severity scoring (0.0 – 1.0) based on the ratio of censored words
-  - Censored text output for display
-  - Ukrainian profanity detection via a custom word list
+Uses NVIDIA's OpenAI-compatible NIM API to detect English/Ukrainian
+profanity and toxic language while preserving the response shape expected
+by the aggregator and UI.
 """
 
-import re
-from better_profanity import profanity
+import json
 import logging
+import re
+
+from openai import APIError, APIStatusError
+
+from app.services.nvidia_nim_service import is_nim_configured, nim_chat_completion
 
 logger = logging.getLogger(__name__)
 
-# ── Load the default English word list on module import ──
-profanity.load_censor_words()
+_VALID_CATEGORIES = {"en_profanity", "ua_profanity", "ua_toxic"}
 
-# ── Ukrainian profanity word list ──
-# Common Ukrainian swear / vulgar words and their morphological variants.
-# This runs as a secondary regex-based check alongside better-profanity.
-_UA_PROFANITY_WORDS: list[str] = [
-    # Core vulgar roots and common inflections
-    r"бля[тдь]",
-    r"блять",
-    r"сук[аиіо]",
-    r"хуй",
-    r"хує",
-    r"хуя",
-    r"хуї",
-    r"хуйн[яюіі]",
-    r"хуйов",
-    r"піздець",
-    r"пізд[аеуюоі]",
-    r"піздат",
-    r"їб[аеуіо]",
-    r"єб[аеуіо]",
-    r"ебат",
-    r"йоб",
-    r"їбан",
-    r"єбан",
-    r"заїб",
-    r"заєб",
-    r"наїб",
-    r"наєб",
-    r"виїб",
-    r"відїб",
-    r"розїб",
-    r"підїб",
-    r"доїб",
-    r"перєб",
-    r"переїб",
-    r"оїб",
-    r"залуп",
-    r"муд[аоіи]",
-    r"мудак",
-    r"мудил",
-    r"гандон",
-    r"гнид[аиі]",
-    r"довбо[йє]б",
-    r"стерв[аоі]",
-    r"падлюк",
-    r"шлюх[аиі]",
-    r"курв[аиі]",
-    r"дрочи",
-    r"дроч",
-    r"дебіл",
-    r"відстал",
-    r"тупиц",
-    r"ублюд",
-    r"виблядок",
-    r"виблядк",
-    r"срак[аиі]",
-    r"сран",
-    r"задниц",
-    r"жоп[аиіу]",
-    r"засран",
-]
-
-_UA_PATTERN = re.compile(
-    r"(?:^|\s|[^\wа-яіїєґ'])(" + "|".join(_UA_PROFANITY_WORDS) + r")",
-    re.I | re.UNICODE,
+_SYSTEM_PROMPT = (
+    "You are a strict multilingual profanity and toxic-language moderation "
+    "classifier for English, Ukrainian, and mixed-language text.\n\n"
+    "Return ONLY one JSON object with this schema:\n"
+    "{\n"
+    '  "score": number,\n'
+    '  "flagged": boolean,\n'
+    '  "censored_text": string,\n'
+    '  "matches": [\n'
+    '    {"text": "exact substring from input", "category": "en_profanity|ua_profanity|ua_toxic"}\n'
+    "  ],\n"
+    '  "reason": "short neutral explanation"\n'
+    "}\n\n"
+    "Scoring rules:\n"
+    "- 0.0 means no profanity or toxic language.\n"
+    "- 0.3-0.5 means mild insult, vulgarity, or isolated profanity.\n"
+    "- 0.6-0.8 means repeated profanity, direct abuse, threats, or hate.\n"
+    "- 0.9-1.0 means extreme abuse, explicit threats, or severe hateful content.\n\n"
+    "Rules:\n"
+    "1. Only include exact substrings that appear in the input.\n"
+    "2. Keep matches short: one word or the shortest harmful phrase.\n"
+    "3. Replace only matched characters in censored_text with asterisks; preserve all other text.\n"
+    "4. If the text is clean, return score 0.0, flagged false, censored_text equal to the input, and matches [].\n"
+    "5. Do not add markdown fences or commentary outside the JSON object."
 )
 
-# ── Ukrainian toxic / hateful language (insults, threats, hate speech) ──
-# These are NOT vulgar words but still indicate harmful content.
-# Each tuple: (compiled regex, weight 0.0–1.0)
-_UA_TOXIC_PATTERNS: list[tuple[re.Pattern, float]] = [
-    # Insults / dehumanisation
-    (re.compile(r'\b(ідіот[иа]?|ідіотськ)\b', re.I), 0.45),
-    (re.compile(r'\b(дур(ень|ні|не[ць]|н[яі]|ак))\b', re.I), 0.40),
-    (re.compile(r'\b(кретин[иа]?|імбецил[иа]?|дебіл[иа]?)\b', re.I), 0.45),
-    (re.compile(r'\b(тупи[йіцх]|тупак)\b', re.I), 0.35),
-    (re.compile(r'\b(нікчем[аний]|покидьк[иа]?|відстал[иій])\b', re.I), 0.40),
-    (re.compile(r'\b(бидл[оа]|швал[ьі]|мраз[ьіи]|наволоч)\b', re.I), 0.50),
-    (re.compile(r'\b(виродк[иа]?|нелюд[иа]?|потвор[аи]?)\b', re.I), 0.50),
-    (re.compile(r'\b(огид[аний]|мерзот[аний]|паскуд[аний])\b', re.I), 0.45),
-    (re.compile(r'\b(нікчемн|жалюгідн|убог[иій])\b', re.I), 0.35),
-    (re.compile(r'\b(недоумк[иа]?|недоум[ок])\b', re.I), 0.40),
 
-    # Threats / wishes of harm
-    (re.compile(r'(сподіваюсь|надіюсь|бажаю|хочу).{0,30}(жахлив|страшн|погано|зло|смерт|помер|здох)', re.I), 0.70),
-    (re.compile(r'(щоб\s*(ти|ви|вони)\s*(здох|помер|стражда|мучи|зник))', re.I), 0.80),
-    (re.compile(r'(трапи(ться|лось)\s*(щось\s*)?(жахлив|страшн|погано|лих[оіе]))', re.I), 0.65),
-    (re.compile(r'(вб\'?ю|заб\'?ю|зарі[жз]|знищ[уі]|закопа[юєтиі]|прибити)', re.I), 0.80),
-    (re.compile(r'(світ\s*(був\s*би|буде|стане)\s*(кращ|ліпш).{0,20}без)', re.I), 0.75),
-    (re.compile(r'(не\s*заслуговуєш|не\s*заслуговують|не\s*варт[иі])\s*(жити|існуват|жит)', re.I), 0.80),
-    (re.compile(r'(здохн|подихай|подохн|зникни|пішов?\s*геть)', re.I), 0.60),
+def _extract_json_object(raw: str) -> dict:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
 
-    # General hate / hostility
-    (re.compile(r'\b(ненавидж[уі]|ненависть|ненавис[тн])\b', re.I), 0.55),
-    (re.compile(r'\b(огидн[иій]|бридк[иій]|відраз[аи]|гидот[аі])\b', re.I), 0.40),
-    (re.compile(r'(такі[хм]?\s*(як\s*)?(ти|ви)\s*(не\s*повинн|не\s*має|не\s*потрібн))', re.I), 0.55),
-    (re.compile(r'(горіти?\s*(в\s*пеклі|у\s*пеклі)|геть\s*(звідси|з\s*країни))', re.I), 0.60),
-]
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        cleaned = match.group(0)
+
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("Expected JSON object")
+    return data
 
 
-def _check_ua_toxic(text: str) -> tuple[float, int]:
-    """
-    Scan text for Ukrainian toxic/hateful patterns.
-    Returns (max_weight_matched, total_match_count).
-    """
-    total = 0
-    max_w = 0.0
-    for pat, weight in _UA_TOXIC_PATTERNS:
-        matches = pat.findall(text)
-        if matches:
-            total += len(matches)
-            max_w = max(max_w, weight)
-    return max_w, total
-
-
-def _calculate_severity(original: str, censored: str) -> float:
-    """
-    Calculate a severity score between 0.0 and 1.0 based on
-    how many words in the text were flagged as profane.
-
-    A single swear word in a long sentence scores lower than
-    a message consisting entirely of profanity.
-    """
-    original_words = re.findall(r'\b\w+\b', original.lower())
-
-    if not original_words:
+def _clamp_score(value: object) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
         return 0.0
-
-    # Count asterisk groups in the censored version (each = one replaced word)
-    asterisk_groups = re.findall(r'\*{2,}', censored)
-    flagged_count = len(asterisk_groups)
-
-    # Severity = ratio of profane words, capped at 1.0
-    ratio = flagged_count / len(original_words)
-    return min(round(ratio, 4), 1.0)
+    return round(max(0.0, min(score, 1.0)), 4)
 
 
-def _check_ukrainian_profanity(text: str) -> tuple[bool, int]:
-    """
-    Check text for Ukrainian profanity using regex patterns.
-    Returns (contains_profanity, match_count).
-    """
-    matches = _UA_PATTERN.findall(text)
-    return bool(matches), len(matches)
+def _find_all_positions(text: str, substring: str) -> list[tuple[int, int]]:
+    positions: list[tuple[int, int]] = []
+    needle = substring.strip()
+    if not needle:
+        return positions
+
+    lower_text = text.lower()
+    lower_needle = needle.lower()
+    start = 0
+    while True:
+        idx = lower_text.find(lower_needle, start)
+        if idx == -1:
+            break
+        positions.append((idx, idx + len(needle)))
+        start = idx + 1
+    return positions
 
 
-def _extract_profanity_spans(text: str) -> list[dict]:
-    """
-    Extract character-level positions of detected profanity and toxic words
-    for X-Ray (Explainable AI) highlighting.
-    """
+def _normalize_matches(data: dict, text: str) -> list[dict]:
     spans: list[dict] = []
+    for item in data.get("matches", []):
+        if not isinstance(item, dict):
+            continue
 
-    # ── English profanity: check each word individually ──
-    for m in re.finditer(r'\b\w+\b', text):
-        word = m.group()
-        if len(word) >= 2 and profanity.contains_profanity(word):
-            spans.append({
-                "text": word,
-                "start": m.start(),
-                "end": m.end(),
-                "source": "profanity",
-                "category": "en_profanity",
-            })
+        match_text = str(item.get("text", "")).strip()
+        category = str(item.get("category", "")).strip()
+        if not match_text or category not in _VALID_CATEGORIES:
+            continue
 
-    # ── Ukrainian profanity ──
-    for m in _UA_PATTERN.finditer(text):
-        if m.group(1):
+        for start, end in _find_all_positions(text, match_text):
             spans.append({
-                "text": m.group(1).strip(),
-                "start": m.start(1),
-                "end": m.end(1),
+                "text": text[start:end],
+                "start": start,
+                "end": end,
                 "source": "profanity",
-                "category": "ua_profanity",
-            })
-
-    # ── Ukrainian toxic / hateful patterns ──
-    for pat, weight in _UA_TOXIC_PATTERNS:
-        for m in pat.finditer(text):
-            spans.append({
-                "text": m.group(0),
-                "start": m.start(),
-                "end": m.end(),
-                "source": "profanity",
-                "category": "ua_toxic",
+                "category": category,
             })
 
     return spans
 
 
+def _censor_from_spans(text: str, spans: list[dict]) -> str:
+    if not spans:
+        return text
+
+    chars = list(text)
+    for span in spans:
+        for idx in range(span["start"], span["end"]):
+            if not chars[idx].isspace():
+                chars[idx] = "*"
+    return "".join(chars)
+
+
 async def check_profanity(text: str) -> dict:
     """
-    Check *text* for profanity using the local English word list
-    **and** a custom Ukrainian word list.
+    Check *text* for profanity and toxic language via NVIDIA NIM.
 
-    Returns
-    -------
-    dict
-        {
-            "score": float,         # 0.0 – 1.0 severity score
-            "flagged": bool,        # True if any profanity was detected
-            "censored_text": str,   # text with swear words replaced by ****
-            "details": dict,        # breakdown of the analysis
-            "triggered_words": list, # X-Ray: word spans that triggered detection
-            "error": None           # local — never fails with an API error
-        }
+    Returns the same schema as the previous local profanity service.
     """
+    if not is_nim_configured():
+        logger.warning("NVIDIA API key not configured — skipping profanity check.")
+        return {
+            "score": None,
+            "flagged": False,
+            "censored_text": text,
+            "details": None,
+            "triggered_words": [],
+            "error": "API token not configured",
+        }
+
     try:
-        # ── English detection (better-profanity) ──
-        contains_profanity_en = profanity.contains_profanity(text)
-        censored = profanity.censor(text)
+        raw_content = await nim_chat_completion(
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            max_tokens=1024,
+            temperature=0.0,
+        )
+        data = _extract_json_object(raw_content)
+        triggered = _normalize_matches(data, text)
 
-        # ── Ukrainian detection (regex) ──
-        contains_profanity_ua, ua_match_count = _check_ukrainian_profanity(text)
+        score = _clamp_score(data.get("score"))
+        flagged = bool(data.get("flagged")) or bool(triggered) or score >= 0.3
+        censored = str(data.get("censored_text") or "")
+        if not censored or len(censored) != len(text):
+            censored = _censor_from_spans(text, triggered)
 
-        # ── Ukrainian toxic / hateful language ──
-        ua_toxic_weight, ua_toxic_count = _check_ua_toxic(text)
-
-        # Censor Ukrainian profanity matches in the censored output
-        if contains_profanity_ua:
-            censored = _UA_PATTERN.sub(
-                lambda m: " " + "*" * len(m.group(1)),
-                censored,
-            )
-
-        contains_profanity = contains_profanity_en or contains_profanity_ua
-        has_toxic_ua = ua_toxic_count > 0
-
-        if contains_profanity or has_toxic_ua:
-            if contains_profanity_en:
-                severity = _calculate_severity(text, censored)
-            elif contains_profanity_ua:
-                # Ukrainian profanity: estimate severity from match count vs word count
-                word_count = len(re.findall(r'\b\w+\b', text.lower()))
-                severity = min(ua_match_count / max(word_count, 1), 1.0)
-            else:
-                severity = 0.0
-
-            # Blend in the Ukrainian toxic keyword weight
-            # The toxic weight (0.0-0.8) directly reflects how severe the match is
-            score = max(severity, ua_toxic_weight, 0.5 if contains_profanity else 0.0)
-        else:
-            score = 0.0
-
-        # ── X-Ray: extract triggered word spans ──
-        triggered = _extract_profanity_spans(text)
+        categories = {span["category"] for span in triggered}
+        details = {
+            "contains_profanity": flagged,
+            "en_profanity": "en_profanity" in categories,
+            "ua_profanity": "ua_profanity" in categories,
+            "ua_match_count": sum(1 for span in triggered if span["category"] == "ua_profanity"),
+            "ua_toxic_detected": "ua_toxic" in categories,
+            "ua_toxic_matches": sum(1 for span in triggered if span["category"] == "ua_toxic"),
+            "ua_toxic_max_weight": score if "ua_toxic" in categories else 0.0,
+            "severity": score,
+            "original_length": len(text),
+            "model_reason": str(data.get("reason", ""))[:500],
+            "provider": "nvidia_nim",
+        }
 
         return {
-            "score": round(score, 4),
-            "flagged": contains_profanity or has_toxic_ua,
+            "score": score,
+            "flagged": flagged,
             "censored_text": censored,
-            "details": {
-                "contains_profanity": contains_profanity,
-                "en_profanity": contains_profanity_en,
-                "ua_profanity": contains_profanity_ua,
-                "ua_match_count": ua_match_count,
-                "ua_toxic_detected": has_toxic_ua,
-                "ua_toxic_matches": ua_toxic_count,
-                "ua_toxic_max_weight": round(ua_toxic_weight, 4),
-                "severity": round(score, 4),
-                "original_length": len(text),
-            },
+            "details": details,
             "triggered_words": triggered,
             "error": None,
         }
 
-    except Exception as exc:
-        # Extremely unlikely for a local library, but guard anyway
-        logger.error("Profanity check failed: %s", exc)
+    except json.JSONDecodeError as exc:
+        logger.error("NVIDIA NIM profanity JSON parse failed: %s", exc)
         return {
-            "score": 0.0,
+            "score": None,
+            "flagged": False,
+            "censored_text": text,
+            "details": {"error": "Invalid model JSON"},
+            "triggered_words": [],
+            "error": "Invalid model JSON",
+        }
+
+    except APIStatusError as exc:
+        logger.error("NVIDIA NIM profanity HTTP error: %s", str(exc)[:300])
+        return {
+            "score": None,
+            "flagged": False,
+            "censored_text": text,
+            "details": None,
+            "triggered_words": [],
+            "error": f"HTTP {exc.status_code}",
+        }
+
+    except APIError as exc:
+        logger.error("NVIDIA NIM profanity API error: %s", exc)
+        return {
+            "score": None,
+            "flagged": False,
+            "censored_text": text,
+            "details": None,
+            "triggered_words": [],
+            "error": str(exc),
+        }
+
+    except Exception as exc:
+        logger.error("NVIDIA NIM profanity check failed: %s", exc)
+        return {
+            "score": None,
             "flagged": False,
             "censored_text": text,
             "details": {"error": str(exc)},

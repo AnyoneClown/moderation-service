@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     # ── External API keys ──
     HF_API_TOKEN: str = ""
+    NVIDIA_API_KEY: str = ""
+    NVIDIA_NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+    NVIDIA_NIM_MODEL: str = "openai/gpt-oss-120b"
 
     # ── App metadata ──
     APP_TITLE: str = "AI Content Moderation System"

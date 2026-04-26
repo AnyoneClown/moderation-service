@@ -27,7 +27,7 @@ A production-ready web application that detects **spam**, **toxicity**, and **pr
 ```bash
 # 1. Clone & configure
 cp .env.example .env
-# Edit .env with your OpenAI and HuggingFace API keys
+# Edit .env with your NVIDIA NIM and HuggingFace API keys
 
 # 2. Launch with Docker Compose
 docker compose up --build
@@ -47,10 +47,12 @@ open http://localhost:8000
 │   ├── models/
 │   │   └── moderation.py    # ModerationRecord ORM model
 │   └── services/
-│       ├── openai_service.py   # OpenAI Moderation API client
-│       ├── hf_service.py       # HuggingFace Inference API client
-│       ├── profanity_service.py # Local better-profanity filter
-│       └── aggregator.py       # Scoring + decision engine
+│       ├── hf_service.py          # HuggingFace spam classifier
+│       ├── hf_toxicity_service.py # HuggingFace toxicity classifier
+│       ├── hf_xray_service.py     # NVIDIA NIM X-Ray highlighter
+│       ├── nvidia_nim_service.py  # Shared NVIDIA NIM client
+│       ├── profanity_service.py   # NVIDIA NIM profanity classifier
+│       └── aggregator.py          # Scoring + decision engine
 ├── templates/               # Jinja2 HTML templates (Tailwind CDN)
 │   ├── base.html
 │   ├── dashboard.html
@@ -69,27 +71,29 @@ open http://localhost:8000
 
 | Source | Weight | Description |
 |---|---|---|
-| OpenAI Moderation | 0.45 | Hate, violence, self-harm, sexual content |
-| HuggingFace Spam | 0.30 | BERT-tiny spam classifier |
-| Profanity Filter | 0.25 | Local swear-word detection |
+| HuggingFace Toxicity | 0.25 | Toxicity and hate-speech detection |
+| HuggingFace Spam | 0.20 | BERT-tiny spam classifier |
+| Profanity Filter | 0.20 | NVIDIA NIM profanity and toxic-language detection |
+| Fraud Detector | 0.25 | Scam, phishing, and fraud indicators |
+| Sentiment | 0.10 | Negative sentiment signal |
 
 | Score Range | Status |
 |---|---|
-| < 0.30 | ✅ APPROVED |
-| 0.30 – 0.64 | ⚠️ FLAGGED |
-| ≥ 0.65 | ❌ REJECTED |
+| < 0.25 | ✅ APPROVED |
+| 0.25 – 0.54 | ⚠️ FLAGGED |
+| ≥ 0.55 | ❌ REJECTED |
 
 If an external API is unavailable, weights are redistributed among available sources and the result is marked as **Partial**.
 
 ## API Keys
 
-- **OpenAI**: Get a free key at https://platform.openai.com/api-keys (the `/v1/moderations` endpoint is free).
+- **NVIDIA NIM**: Set `NVIDIA_API_KEY` for `https://integrate.api.nvidia.com/v1`.
 - **HuggingFace**: Get a token at https://huggingface.co/settings/tokens (free Inference API for public models).
 
 ## Tech Stack
 
 - **Backend**: FastAPI, Python 3.11, async/await
 - **Database**: PostgreSQL 16, SQLAlchemy 2.0 (async)
-- **AI Services**: OpenAI Moderation API, HuggingFace Inference API, better-profanity
+- **AI Services**: NVIDIA NIM, HuggingFace Inference API
 - **Frontend**: Jinja2 + Tailwind CSS (CDN)
 - **DevOps**: Docker multi-stage build, Docker Compose with healthchecks

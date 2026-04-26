@@ -200,7 +200,11 @@ async def _run_text_checks(text: str) -> tuple[dict, dict, dict, dict, dict, boo
         is_partial = True
         logger.warning("Spam result unavailable — partial scoring.")
 
-    sources["profanity"] = profanity_result["score"]
+    if profanity_result["score"] is not None:
+        sources["profanity"] = profanity_result["score"]
+    else:
+        is_partial = True
+        logger.warning("Profanity result unavailable — partial scoring.")
 
     if fraud_result["score"] is not None:
         sources["fraud"] = fraud_result["score"]
