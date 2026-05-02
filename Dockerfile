@@ -51,5 +51,8 @@ RUN mkdir -p /app/uploads
 # Expose the default Uvicorn port
 EXPOSE 8000
 
+# Render expects web services to bind on $PORT at runtime.
+ENV PORT=8000
+
 # Run with Uvicorn (production-ready ASGI server)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

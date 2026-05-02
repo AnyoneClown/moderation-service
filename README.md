@@ -36,6 +36,56 @@ docker compose up --build
 open http://localhost:8000
 ```
 
+## Supabase Instead of Local Postgres
+
+The app already uses plain PostgreSQL via SQLAlchemy and `asyncpg`, so you can
+swap the database backend to Supabase without rewriting the data layer.
+
+1. Create a Supabase project.
+2. In the Supabase dashboard, copy either:
+   - the **Direct connection string** for a persistent server with IPv6 support, or
+   - the **Session pooler** connection string for general deployment platforms.
+3. Set these values in `.env`:
+
+```env
+DATABASE_URL=postgresql://postgres.[PROJECT_REF]:YOUR_PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres
+DATABASE_SSL_MODE=require
+```
+
+The app normalizes Supabase `postgresql://` URLs to the `asyncpg` SQLAlchemy
+driver automatically. By default, `docker compose up --build` starts only the
+web app, which is what you want when using Supabase.
+
+`DATABASE_SSL_MODE=require` enables TLS without certificate verification, which
+is often the most practical setting for managed pooler endpoints. If you want
+strict certificate validation, switch to `DATABASE_SSL_MODE=verify-full`.
+
+If you want the bundled local PostgreSQL container instead, run:
+
+```bash
+docker compose --profile localdb up --build
+```
+
+## Deploy on Render
+
+This repo is ready for a Docker-based Render web service.
+
+1. Push the repo to GitHub.
+2. In Render, create a new **Web Service** from that GitHub repo.
+3. Render should detect the included `render.yaml`, or you can configure the service manually as:
+   - **Runtime**: Docker
+   - **Health check path**: `/health`
+4. Add these environment variables in Render:
+   - `DATABASE_URL` = your Supabase connection string
+   - `DATABASE_SSL_MODE` = `require`
+   - `DATABASE_POOL_PRE_PING` = `true`
+   - `HF_API_TOKEN` = your Hugging Face token
+   - `NVIDIA_API_KEY` = your NVIDIA API key
+5. Deploy.
+
+Render provides the runtime `PORT` environment variable automatically for web
+services, and the container is configured to bind to it.
+
 ## Project Structure
 
 ```

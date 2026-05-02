@@ -7,16 +7,19 @@ dependency is injected into FastAPI routes that need database access.
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import declarative_base
+
 from app.config import get_settings
 
 settings = get_settings()
 
 # ── Async engine (connection pool to PostgreSQL) ──
 engine = create_async_engine(
-    settings.DATABASE_URL,
+    settings.sqlalchemy_database_url,
+    connect_args=settings.sqlalchemy_connect_args,
     echo=False,          # Set True for SQL statement logging during debug
     pool_size=10,
     max_overflow=20,
+    pool_pre_ping=settings.DATABASE_POOL_PRE_PING,
 )
 
 # ── Session factory — produces AsyncSession instances ──
