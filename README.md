@@ -2,6 +2,8 @@
 
 A production-ready web application that detects **spam**, **toxicity**, and **prohibited language** in social-media posts using pre-trained AI models and free APIs.
 
+Live deployment: https://moderation-service-65yz.onrender.com
+
 ## Architecture
 
 ```
@@ -35,6 +37,8 @@ docker compose up --build
 # 3. Open in browser
 open http://localhost:8000
 ```
+
+If you just want to try the hosted app, open https://moderation-service-65yz.onrender.com
 
 ## Supabase Instead of Local Postgres
 
@@ -85,6 +89,8 @@ This repo is ready for a Docker-based Render web service.
 
 Render provides the runtime `PORT` environment variable automatically for web
 services, and the container is configured to bind to it.
+
+Current live Render deployment: https://moderation-service-65yz.onrender.com
 
 ## Project Structure
 
