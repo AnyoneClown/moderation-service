@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     NVIDIA_API_KEY: str = ""
     NVIDIA_NIM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
     NVIDIA_NIM_MODEL: str = "openai/gpt-oss-120b"
+    NVIDIA_NIM_DISABLE_STREAMING: bool = False
+    NVIDIA_NIM_TIMEOUT_SECONDS: float = 30.0
 
     # ── App metadata ──
     APP_TITLE: str = "AI Content Moderation System"

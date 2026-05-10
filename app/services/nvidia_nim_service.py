@@ -6,7 +6,7 @@ Uses NVIDIA's OpenAI-compatible API for LLM-backed moderation services.
 
 import logging
 
-from openai import AsyncOpenAI
+from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
 
 from app.config import get_settings
 
@@ -23,25 +23,24 @@ def _client() -> AsyncOpenAI:
     return AsyncOpenAI(
         base_url=settings.NVIDIA_NIM_BASE_URL,
         api_key=settings.NVIDIA_API_KEY,
+        timeout=settings.NVIDIA_NIM_TIMEOUT_SECONDS,
     )
 
 
-async def nim_chat_completion(
+def _describe_exception(exc: Exception) -> str:
+    cause = exc.__cause__
+    if cause is None:
+        return exc.__class__.__name__
+    return f"{exc.__class__.__name__} (cause={cause.__class__.__name__}: {cause})"
+
+
+async def _stream_chat_completion(
     *,
     messages: list[dict[str, str]],
-    max_tokens: int = 1024,
-    temperature: float = 0.1,
-    top_p: float = 1.0,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
 ) -> str:
-    """
-    Run a streaming NVIDIA NIM chat completion and return assembled content.
-
-    The public API is intentionally tiny so services can keep their own prompts,
-    parsing, and domain-specific fallback behavior.
-    """
-    if not is_nim_configured():
-        raise RuntimeError("NVIDIA API key not configured")
-
     stream = await _client().chat.completions.create(
         model=settings.NVIDIA_NIM_MODEL,
         messages=messages,
@@ -66,3 +65,68 @@ async def nim_chat_completion(
         raise RuntimeError("Empty NVIDIA NIM message content")
 
     return "".join(parts)
+
+
+async def _non_stream_chat_completion(
+    *,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
+    response = await _client().chat.completions.create(
+        model=settings.NVIDIA_NIM_MODEL,
+        messages=messages,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        stream=False,
+    )
+    content = response.choices[0].message.content if response.choices else None
+    if not content:
+        raise RuntimeError("Empty NVIDIA NIM message content")
+    return content
+
+
+async def nim_chat_completion(
+    *,
+    messages: list[dict[str, str]],
+    max_tokens: int = 1024,
+    temperature: float = 0.1,
+    top_p: float = 1.0,
+) -> str:
+    """
+    Run a streaming NVIDIA NIM chat completion and return assembled content.
+
+    The public API is intentionally tiny so services can keep their own prompts,
+    parsing, and domain-specific fallback behavior.
+    """
+    if not is_nim_configured():
+        raise RuntimeError("NVIDIA API key not configured")
+
+    if settings.NVIDIA_NIM_DISABLE_STREAMING:
+        return await _non_stream_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+    try:
+        return await _stream_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+    except (APIConnectionError, APITimeoutError) as exc:
+        logger.warning(
+            "NVIDIA NIM streaming request failed; retrying without streaming: %s",
+            _describe_exception(exc),
+        )
+        return await _non_stream_chat_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
